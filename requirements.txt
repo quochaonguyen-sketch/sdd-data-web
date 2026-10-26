@@ -1,0 +1,4 @@
+requests==2.34.2
+google-auth==2.62.0
+selenium==4.51.0
+cryptography==50.0.2

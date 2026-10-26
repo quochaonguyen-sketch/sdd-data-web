@@ -1,0 +1,10 @@
+{
+  "performance": {
+    "delivery": [
+      {"driver_id": "DEMO-001", "driver_name": "Rider demo", "contract_type_name": "Fulltime", "period_metric": {"DAILY_VN_NUMBER_OF_PARCEL_ASSIGNED": 100, "DAILY_VN_NUMBER_OF_PARCEL_DELIVERED": 85}}
+    ],
+    "pickup": [
+      {"driver_id": "DEMO-001", "driver_name": "Rider demo", "contract_type_name": "Fulltime", "period_metric": {"DAILY_VN_NUMBER_OF_PICKUP_PARCEL_ASSIGNED": 40, "DAILY_VN_NUMBER_OF_PICKUP_PARCEL_PICKED_UP": 36}}
+    ]
+  }
+}

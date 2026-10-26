@@ -1,0 +1,36 @@
+{
+  "pickup": [
+    {
+      "shipment_id": "DEMO-P1",
+      "pickup_zone_id": "demo-a",
+      "create_time": 1792724400
+    },
+    {
+      "shipment_id": "DEMO-P2",
+      "pickup_zone_id": "demo-b",
+      "create_time": 1792744200
+    },
+    {
+      "shipment_id": "DEMO-P3",
+      "pickup_zone_id": "demo-c",
+      "create_time": 1792724400
+    }
+  ],
+  "delivery": [
+    {
+      "shipment_id": "DEMO-D1",
+      "zone_id": "demo-a",
+      "current_station_received_time": 1792717140
+    },
+    {
+      "shipment_id": "DEMO-D2",
+      "zone_id": "demo-b",
+      "current_station_received_time": 1792717200
+    },
+    {
+      "shipment_id": "DEMO-D3",
+      "zone_id": "demo-b",
+      "current_station_received_time": 1792735200
+    }
+  ]
+}
