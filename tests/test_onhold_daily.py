@@ -1,7 +1,9 @@
 import unittest
+import tempfile
+from pathlib import Path
 from datetime import datetime, date
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from sdd_data.onhold_daily import aggregate, OnholdClient, station_matches, prepare_onhold_observations
 from sdd_data.transform import TZ
 
@@ -13,6 +15,47 @@ def order(sid='A', **extra):
             'current_station_id': 4232, 'zone_id': 'Z6.OLD', 'on_hold_reason': 169, **extra}
 
 class OHTests(unittest.TestCase):
+    def test_central_worker_captures_only_in_cutoff_window(self):
+        from sdd_data.source_job import execute
+        today=datetime.now(TZ).date()
+        for hour,minute,due in [(22,59,False),(23,0,True),(23,15,False)]:
+            boundary=Mock(publishing=False,job='job',worker='worker')
+            boundary.begin.side_effect=lambda: setattr(boundary,'publishing',True)
+            boundary.control.rpc.return_value=True
+            stats={'input':0,'excluded':0,'scan_started_at':'stamp'}
+            with tempfile.TemporaryDirectory() as folder,patch('sdd_data.source_job.datetime') as clock,patch('sdd_data.onhold_daily.prepare_onhold_observations',return_value=([],stats)):
+                clock.now.return_value=datetime.combine(today,datetime.min.time(),TZ).replace(hour=hour,minute=minute)
+                execute(Mock(), 'onhold_daily',today.isoformat(),boundary,root=Path(folder))
+            calls=[c for c in boundary.control.rpc.call_args_list if c.args[0]=='publish_overnight_hold']
+            self.assertEqual(len(calls),int(due))
+
+    def test_overnight_scan_includes_delivering_without_prior_onhold(self):
+        client=object.__new__(OnholdClient);client.settings=SimpleNamespace(workers=2)
+        payloads=[]
+        def post(payload):
+            payloads.append(payload)
+            return {'total':0,'list':[]}
+        client.post=post
+        client.overnight=True
+        client.fetch(DAY)
+        self.assertTrue(payloads)
+        self.assertTrue(all('on_hold_times' not in p for p in payloads))
+        payloads.clear();client.overnight=False;client.fetch(DAY)
+        self.assertTrue(all(p['on_hold_times']=='1,10' for p in payloads))
+
+    def test_overnight_requires_today_delivering_and_current_hub_rider(self):
+        today=datetime.now(TZ).date()
+        stamp=int(datetime.combine(today,datetime.min.time(),TZ).timestamp())+3600
+        valid=order('NIGHT',delivering_time=stamp,driver_id=123,order_status=1)
+        rows=[valid,{**valid,'shipment_id':'OLD','delivering_time':stamp-86400},
+              {**valid,'shipment_id':'NO-RIDER','driver_id':0},
+              {**valid,'shipment_id':'OTHER-HUB','current_station_id':1}]
+        with patch('sdd_data.onhold_daily.load_coverage',return_value={}),patch('sdd_data.onhold_daily.OnholdClient') as client:
+            client.return_value.fetch.return_value=rows
+            events,_=prepare_onhold_observations(SimpleNamespace(station_id='4232'),today,overnight=True)
+        self.assertEqual([e['order_code'] for e in events],['NIGHT'])
+        self.assertEqual(datetime.fromisoformat(events[0]['delivering_at']).date(),today)
+
     def test_current_area_mapping_dedup_and_pivot_privacy(self):
         mapping={'z6.old':{'district':'Quận 12','old_ward':'Phường Thạnh Lộc','area':'KV5'}}
         pivot,stats=aggregate([order(),order(),order('B',order_status=1)],mapping,DAY,'4232','Home')

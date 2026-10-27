@@ -85,8 +85,16 @@ def execute(settings, source, day, boundary, *, root=ROOT):
                     store.close()
         elif source == 'onhold_daily':
             from .onhold_daily import prepare_onhold_observations
+            overnight = None
+            if datetime.now(TZ).hour == 23 and datetime.now(TZ).minute < 15:
+                if boundary.control.rpc('overnight_hold_capture_due'):
+                    overnight = prepare_onhold_observations(settings, day, overnight=True)
             events, stats = prepare_onhold_observations(settings, day)
             boundary.begin()
+            if overnight is not None:
+                night_events, night_stats = overnight
+                boundary.control.rpc('publish_overnight_hold', p_job=boundary.job, p_worker=boundary.worker,
+                    p_rows=night_events, p_started=night_stats['scan_started_at'])
             boundary.control.rpc('record_central_onhold', p_job=boundary.job, p_worker=boundary.worker,
                 p_events=events, p_input=stats['input'], p_excluded=stats['excluded'], p_started=stats['scan_started_at'])
         elif source == 'return_inventory':

@@ -31,7 +31,9 @@ class OnholdClient(SpxClient):
         start = int(datetime.combine(day, time.min, TZ).timestamp())
         end = min(int((datetime.combine(day + timedelta(days=1), time.min, TZ)).timestamp()) - 1,
                   int(datetime.now(TZ).timestamp()))
-        base = {'delivering_time': f'{start},{end}', 'on_hold_times': '1,10', 'order_status': '5,1', 'count': 200}
+        base = {'delivering_time': f'{start},{end}', 'order_status': '5,1', 'count': 200}
+        if not getattr(self, 'overnight', False):
+            base['on_hold_times'] = '1,10'
         # Changing OH statuses make offset pagination skip/duplicate rows even when
         # delivering_time is fixed. Read disjoint time buckets until each fits ONE
         # response. This is a complete scan, not a transactional SPX snapshot.
@@ -114,7 +116,7 @@ def prepare_onhold(settings, day):
         client.close()
 
 
-def prepare_onhold_observations(settings, day):
+def prepare_onhold_observations(settings, day, *, overnight=False):
     """Send only day-scoped digests and pivot dimensions, never source order JSON."""
     day = date.fromisoformat(day) if isinstance(day, str) else day
     if day != datetime.now(TZ).date():
@@ -122,10 +124,14 @@ def prepare_onhold_observations(settings, day):
     started = datetime.now(TZ).isoformat()
     mapping = load_coverage(settings)
     client = OnholdClient(settings)
+    client.overnight = overnight
     try:
         rows = client.fetch(day)
         events = []
         for row in rows:
+            if overnight and (str(row.get('current_station_id') or '') != str(settings.station_id)
+                              or first(row, 'driver_id', 'rider_id', 'driverId') in ('', '0', 'unknown')):
+                continue
             pivot, stats = aggregate([row], mapping, day, settings.station_id, '52-HCM SDD-01 Hub')
             if not stats['included']:
                 continue
@@ -147,6 +153,8 @@ def prepare_onhold_observations(settings, day):
                 'rider_code': first(row, 'driver_id', 'rider_id', 'driverId')[:100] or 'unknown',
                 'rider_name': first(row, 'driver_name', 'rider_name', 'driverName')[:150] or 'Chưa rõ rider',
             })
+            if overnight:
+                events[-1]['delivering_at'] = as_datetime(row['delivering_time']).isoformat()
         logging.info('OH cumulative scan: input=%s eligible=%s excluded=%s', len(rows), len(events), len(rows)-len(events))
         return events, {'input':len(rows), 'excluded':len(rows)-len(events), 'scan_started_at':started}
     finally:
