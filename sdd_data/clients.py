@@ -4,10 +4,12 @@ import csv
 import json
 import logging
 import math
+import os
 import re
 from pathlib import Path
 import time as clock
 import threading
+import tempfile
 from urllib.parse import quote
 
 from .config import Settings
@@ -88,24 +90,53 @@ def read_cookies(path: Path) -> dict:
     return cookies
 
 
-def load_coverage(settings: Settings, csv_path: Path | None = None):
+def load_coverage(settings: Settings, csv_path: Path | None = None, *, cache_dir: Path | None = None):
     if csv_path:
         with csv_path.open(encoding="utf-8-sig", newline="") as handle:
             return coverage_map(list(csv.reader(handle)))
     if not settings.service_account_file.is_file():
         raise RuntimeError("Thiếu Google service account để đọc Coverage SA; có thể dùng --mapping-csv.")
-    from google.oauth2.service_account import Credentials
-    from google.auth.transport.requests import AuthorizedSession
-    credentials = Credentials.from_service_account_file(
-        settings.service_account_file, scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
-    )
-    sheet_range = "'" + settings.sheet_name.replace("'", "''") + "'!A:ZZ"
-    url = f"https://sheets.googleapis.com/v4/spreadsheets/{quote(settings.sheet_id, safe='')}/values/{quote(sheet_range, safe='')}"
-    with AuthorizedSession(credentials) as session:
-        response = session.get(url, timeout=45)
-        if response.status_code != 200:
-            raise RuntimeError(f"Không đọc được Coverage SA (HTTP {response.status_code}). Kiểm tra quyền đọc Google Sheet.")
-        result = coverage_map(response.json().get("values", []))
+    cache_path = cache_dir / f'coverage-sa-{settings.station_id}.json' if cache_dir else None
+    source = [settings.station_id, settings.sheet_id, settings.sheet_name, str(settings.service_account_file.resolve())]
+    result = None
+    if cache_path and cache_path.is_file():
+        try:
+            cached = json.loads(cache_path.read_text(encoding='utf-8'))
+            if cached['source'] == source and 0 <= clock.time() - cached['saved_at'] < 3600:
+                result = coverage_map(cached['values'])
+                log.info('Coverage SA: dùng cache còn hạn (tối đa 60 phút).')
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            log.warning('Coverage SA: cache không hợp lệ; đọc lại Google Sheets.')
+    if result is None:
+        from google.oauth2.service_account import Credentials
+        from google.auth.transport.requests import AuthorizedSession
+        credentials = Credentials.from_service_account_file(
+            settings.service_account_file, scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+        )
+        sheet_range = "'" + settings.sheet_name.replace("'", "''") + "'!A:ZZ"
+        url = f"https://sheets.googleapis.com/v4/spreadsheets/{quote(settings.sheet_id, safe='')}/values/{quote(sheet_range, safe='')}"
+        with AuthorizedSession(credentials) as session:
+            response = session.get(url, timeout=45)
+            if response.status_code != 200:
+                raise RuntimeError(f"Không đọc được Coverage SA (HTTP {response.status_code}). Kiểm tra quyền đọc Google Sheet.")
+            values = response.json().get("values", [])
+            result = coverage_map(values)
+        if cache_path:
+            pending = None
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=cache_path.parent, delete=False) as handle:
+                    pending = Path(handle.name)
+                    json.dump({'source': source, 'saved_at': clock.time(), 'values': values}, handle, ensure_ascii=False)
+                os.replace(pending, cache_path)
+            except OSError:
+                log.warning('Không lưu được cache Coverage SA; vẫn dùng dữ liệu vừa đọc.')
+            finally:
+                if pending:
+                    try:
+                        pending.unlink(missing_ok=True)
+                    except OSError:
+                        log.warning('Không dọn được file tạm cache Coverage SA.')
     alias_file = settings.coverage_alias_file
     if alias_file and alias_file.is_file():
         with alias_file.open(encoding="utf-8-sig", newline="") as handle:

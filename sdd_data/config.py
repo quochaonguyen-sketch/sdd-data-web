@@ -43,7 +43,7 @@ class Settings:
     inventory_workers: int = 16
     batch_size: int = 200
     coverage_alias_file: Path | None = None
-    delivery_workers: int = 24
+    delivery_workers: int = 48
 
     @classmethod
     def load(cls, root: Path = ROOT):
@@ -80,5 +80,5 @@ class Settings:
             max(1, min(24, int(get("INVENTORY_WORKERS", "16")))),
             max(1, min(1000, int(get("WRITE_BATCH_SIZE", "500")))),
             resolve(get("COVERAGE_ALIAS_FILE", "config/mappings/coverage-old-new.csv")),
-            max(1, min(24, int(get("DELIVERY_WORKERS", "24")))),
+            max(1, min(48, int(get("DELIVERY_WORKERS", "48")))),
         )

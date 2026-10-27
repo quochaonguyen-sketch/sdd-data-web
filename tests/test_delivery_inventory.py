@@ -1,6 +1,7 @@
 from dataclasses import replace
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -30,6 +31,12 @@ def order(sid="A", hour=10, minute=0, **extra):
 
 
 class InventoryTransformTests(unittest.TestCase):
+    def test_delivery_concurrency_is_configurable_and_bounded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for value, expected in [('48',48),('999',48),('12',12),('0',1)]:
+                with patch.dict(os.environ, {'DELIVERY_WORKERS':value}):
+                    self.assertEqual(Settings.load(Path(tmp)).delivery_workers,expected)
+
     def test_snapshot_uses_buyer_mapping_and_true_received_date(self):
         rows, stats = build_inventory([order(seller_zone_id="route-b")], MAPPING, AREAS)
         self.assertEqual(rows[0]["area"], "KV1")

@@ -277,7 +277,7 @@ def prepare_inventory(settings, *, lookback_days=14, root, stop_event=None, mapp
     fetch_ms, fetch_stats = 0, {}
     # Fire Google Sheets I/O in background; they complete while SPX fetch runs.
     with ThreadPoolExecutor(max_workers=2) as io_pool:
-        coverage_future = io_pool.submit(load_coverage, settings, mapping_csv)
+        coverage_future = io_pool.submit(load_coverage, settings, mapping_csv, cache_dir=Path(root) / 'data')
         ward_future = io_pool.submit(load_seller_wards, settings) if orders is None else None
         if orders is None:
             client = InventoryClient(replace(settings, inventory_workers=settings.delivery_workers), stop_event)
