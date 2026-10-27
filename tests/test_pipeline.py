@@ -322,6 +322,7 @@ class RunnerTests(unittest.TestCase):
                           for i, zone in enumerate(["route-a", "missing", ""])]
                 with patch("sdd_data.runner.load_coverage", return_value=MAPPING), \
                      patch("sdd_data.runner.SpxClient") as client, \
+                     patch("sdd_data.pickup_points.publish_daily", return_value=0), \
                      patch("sdd_data.runner.WebsiteStore") as store:
                     client.return_value.fetch.return_value = orders
                     store.return_value.commit_snapshot.return_value = {"upserted": 1, "stale_removed": 0}

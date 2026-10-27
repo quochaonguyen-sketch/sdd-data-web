@@ -199,7 +199,7 @@ class PickupRouteClient(SpxClient):
             points.pop(sid, None)
         return points
 
-def enrich_pickup_routes(settings, orders, day, root):
+def enrich_pickup_routes(settings, orders, day, root, *, client_factory=None):
     """Cache only positive point IDs for this day/station; routes are refreshed each run."""
     cache_path = Path(root) / "data" / f"pickup-points-{settings.station_id}-{day}.json"
     cache = {}
@@ -210,7 +210,7 @@ def enrich_pickup_routes(settings, orders, day, root):
     ids = list(dict.fromkeys(str(row.get("shipment_id") or "").strip() for row in orders if row.get("shipment_id")))
     missing = [sid for sid in ids if sid not in cache]
     stats = Counter(pickup_point_cached=len(ids) - len(missing))
-    client = PickupRouteClient(settings)
+    client = (client_factory or PickupRouteClient)(settings)
     def save():
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         pending = cache_path.with_suffix(".pending")

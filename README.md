@@ -1,5 +1,14 @@
 # SDD Web Data
 
+## Pickup Points toàn hub và ADO theo shop
+
+- `python -X utf8 -m sdd_data.pickup_points` đọc danh mục nhóm SPX toàn hub 4232 và PUP đang chờ (gồm điểm chưa có nhóm), lấy chi tiết tên shop, địa chỉ, phường và tuyến vào Pickup Points. Không đọc Sheet gán KV1+2, không lọc KV và không gọi API gán rider. Các bản ghi chỉ có `last_synced_at`, không giả lập `assigned_at`.
+- Trong `spx_py_laucher`: `auto_assign_pick_kv1_2.py --sync-pickup-points` gọi đúng chế độ trên. Không ghép `--live`, `--loop` hoặc cấu hình gán với chế độ này.
+- Danh mục ghi từng lô 200, giữ các điểm cũ và lưu cache chi tiết một ngày; chạy lại để tiếp tục khi lỗi. Điểm có nhiều tuyến được giữ nguyên danh sách nhóm, không tự chọn một tuyến.
+- Mỗi lần chạy Pickup Volume sẽ bổ sung thống kê theo PUP từ cùng tập vận đơn đã xác minh. Tải lịch sử: `python -X utf8 -m sdd_data.pickup_points --backfill-days 30` (chỉ thống kê theo shop, không sửa tổng Volume hiện có).
+- ADO = tổng đơn / số ngày đã nạp đầy đủ trong cửa sổ 30 ngày lịch đã hoàn tất, bao gồm ngày có 0 đơn và loại hôm nay. Ngày chưa tải hoặc còn đơn chưa xác định được PUP không được coi là ngày 0 đơn. Kết quả ADO làm tròn lên số nguyên (ví dụ 15,5 → 16; 0 giữ nguyên 0), đồng nhất trên web và CSV. Web hiển thị ADO ngay từ ngày đầy đủ đầu tiên, kèm số ngày tính trung bình; chỉ hiện `—` khi chưa có ngày đầy đủ. Tử số và mẫu số đều chỉ lấy các ngày đầy đủ. Không suy đoán ADO shop từ tổng tuyến/phường. Đơn được API chi tiết xác nhận không có PUP được loại khỏi phạm vi ADO shop; lỗi tra cứu hoặc nhiều PUP mơ hồ vẫn được ghi nhận là chưa xác định.
+- SQL: chạy `node --env-file=.env --env-file=.env.local scripts/apply-pickup-points.cjs` từ project website. Thêm `--test` để kiểm tra bằng giao dịch rollback.
+
 ## Delivery Realtime Dashboard
 
 - Nguồn `delivery_realtime` lấy báo cáo tiến độ giao hàng SPX 10 phút, dùng cookie riêng và Supabase đích đã cấu hình của website. Dashboard `/realtime-dashboard` đọc bảng `realtime_delivery_riders` và tự cập nhật qua Supabase Realtime.
@@ -186,8 +195,12 @@ Dùng cookie và cơ chế làm mới cookie của chính sdd-web-data. Không i
 Sản lượng lấy = tổng `pickup_quantity` của task trong ngày UTC+7. Chờ lấy/Onhold đọc trực tiếp từ SPX status 0/2, gồm `pickup_attempts` và các cờ Onhold. Gán rider qua task của pickup point; đơn mới COT2 sau 12:00 ưu tiên rider task COT2 giống quy tắc hiện hành. KV/COT hiển thị theo hồ sơ web. Hồ sơ không có hoạt động sau khi kiểm đủ nguồn có số 0; nguồn lỗi/thiếu/trùng trang không thay snapshot cuối. Bảng tồn chỉ cung cấp thông tin địa bàn, không dùng các số tồn cũ làm sản lượng realtime.
 
 Kiểm tra: `python -m unittest tests.test_pickup_realtime -v`. Nhật ký ở `logs/`, báo cáo từng lượt ở `data/pickup-realtime-*.json`.
-#   s d d - d a t a - w e b  
- #   s d d - d a t a - w e b  
- #   s d d - d a t a - w e b  
- #   s d d - d a t a - w e b  
+#   s d d - d a t a - w e b 
+ 
+ #   s d d - d a t a - w e b 
+ 
+ #   s d d - d a t a - w e b 
+ 
+ #   s d d - d a t a - w e b 
+ 
  

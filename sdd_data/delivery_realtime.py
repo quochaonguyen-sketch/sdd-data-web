@@ -3,6 +3,9 @@ import argparse
 from datetime import datetime
 import logging
 from pathlib import Path
+import time
+
+import requests
 
 from .clients import SpxClient
 from .config import ROOT, Settings
@@ -31,7 +34,20 @@ def integer(value):
 class DeliveryRealtimeClient(SpxClient):
     def fetch_progress(self):
         # SpxSession handles cookie renewal once, using this project's private profile.
-        response = self.session().post(API, timeout=60, allow_redirects=False)
+        for attempt in range(3):
+            try:
+                response = self.session().post(API, timeout=(15, 120), allow_redirects=False)
+            except requests.RequestException:
+                if attempt == 2:
+                    raise RuntimeError('Không kết nối được Delivery realtime sau 3 lần thử; giữ snapshot cũ.') from None
+            else:
+                if response.status_code != 429 and response.status_code < 500:
+                    break
+                if attempt == 2:
+                    break
+                response.close()
+            logging.warning('Delivery realtime: lỗi mạng/nguồn tạm thời; thử lại lần %s/3.', attempt + 2)
+            time.sleep(2 ** attempt)
         if response.status_code != 200:
             raise RuntimeError(f'Delivery realtime: HTTP {response.status_code}; giữ snapshot cũ.')
         try:
@@ -52,6 +68,7 @@ def build_rows(raw):
     if not isinstance(raw, list) or not raw:
         raise ValueError('Báo cáo Delivery rỗng; giữ snapshot cũ.')
     rows, seen = [], set()
+    negative_idle = 0
     for item in raw:
         if not isinstance(item, dict):
             raise ValueError('Dòng Delivery không hợp lệ.')
@@ -65,14 +82,21 @@ def build_rows(raw):
         if counts['total_assigned'] == 0:
             continue
         first = integer(item.get('lm_hub_fleet_first_delivering_time_eod') or 0)
+        idle = int(str(item.get('lm_hub_fleet_idle_delivery_second') or 0))
+        # SPX can report a negative elapsed duration; it must not become an idle alert.
+        if idle < 0:
+            negative_idle += 1
+            idle = 0
         rows.append({
             'driver_id': driver, 'driver_name': item.get('driver_name') or None,
             **counts, 'zone_id': str(item.get('max_assigned_zone_id') or '').strip() or None,
             'first_delivery_at': datetime.fromtimestamp(first, TZ).strftime('%H:%M:%S') if first else None,
-            'idle_delivery_seconds': integer(item.get('lm_hub_fleet_idle_delivery_second') or 0),
+            'idle_delivery_seconds': idle,
         })
     if not rows:
         raise ValueError('Delivery không có rider được giao đơn; giữ snapshot cũ.')
+    if negative_idle:
+        logging.warning('Delivery realtime: chuẩn hóa thời gian đứng yên âm về 0 cho %s rider.', negative_idle)
     return rows
 
 

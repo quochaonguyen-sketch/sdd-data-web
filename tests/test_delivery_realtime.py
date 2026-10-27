@@ -3,6 +3,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
+import requests
 from sdd_data.delivery_realtime import build_rows, DeliveryRealtimeClient, prepare_delivery_realtime
 from sdd_data.transform import TZ
 
@@ -16,6 +17,43 @@ def rider(**extra):
 
 
 class DeliveryRealtimeTests(unittest.TestCase):
+    def test_negative_idle_is_zero_without_changing_order_counters(self):
+        with self.assertLogs(level='WARNING'):
+            row, = build_rows([rider(lm_hub_fleet_idle_delivery_second=-60)])
+        self.assertEqual(row['idle_delivery_seconds'], 0)
+        self.assertEqual([row[k] for k in ('total_assigned','delivered','delivering','failed')], [10,4,5,1])
+        with self.assertRaises(ValueError):
+            build_rows([rider(lm_hub_fleet_idle_delivery_second='invalid')])
+
+    @patch('sdd_data.delivery_realtime.time.sleep')
+    def test_retries_transient_failures_but_not_authentication(self, sleep):
+        client = DeliveryRealtimeClient.__new__(DeliveryRealtimeClient)
+        session = Mock()
+        client.session = Mock(return_value=session)
+        success = Mock(status_code=200, json=Mock(return_value={'data':{'list':[rider()]}}))
+        unavailable = Mock(status_code=503)
+        session.post.side_effect = [requests.Timeout(), unavailable, success]
+        self.assertEqual(len(client.fetch_progress()), 1)
+        self.assertEqual(session.post.call_count, 3)
+        self.assertEqual(session.post.call_args.kwargs['timeout'], (15,120))
+        unavailable.close.assert_called_once()
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [1,2])
+        session.post.reset_mock(side_effect=True)
+        session.post.return_value = Mock(status_code=403)
+        with self.assertRaisesRegex(RuntimeError, 'HTTP 403'):
+            client.fetch_progress()
+        self.assertEqual(session.post.call_count, 1)
+
+    @patch('sdd_data.delivery_realtime.time.sleep')
+    def test_retries_are_bounded(self, sleep):
+        client = DeliveryRealtimeClient.__new__(DeliveryRealtimeClient)
+        session = Mock()
+        client.session = Mock(return_value=session)
+        session.post.side_effect = requests.Timeout()
+        with self.assertRaisesRegex(RuntimeError, '3 lần thử'):
+            client.fetch_progress()
+        self.assertEqual(session.post.call_count,3)
+
     def test_maps_real_spx_counters_without_raw_payload(self):
         row, = build_rows([rider(lm_hub_fleet_first_delivering_time_eod=1793062800,
                                 lm_hub_fleet_idle_delivery_second=1800)])

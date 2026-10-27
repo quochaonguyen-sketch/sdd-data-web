@@ -208,6 +208,9 @@ def run(settings: Settings, kind: str, day: str, *, dry_run=False, mapping_csv=N
                 store = WebsiteStore(settings)
                 try:
                     result["sync"] = store.commit_snapshot(job, day, rows)
+                    if job == "pickup":
+                        from .pickup_points import publish_daily
+                        result["shop_volume"] = publish_daily(settings, day, orders)
                 finally:
                     store.close()
                 result["status"] = "synced"

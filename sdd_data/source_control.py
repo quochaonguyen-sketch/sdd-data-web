@@ -3,7 +3,7 @@ import requests
 
 SOURCES = frozenset(('pickup_inventory', 'delivery_inventory', 'pickup_realtime', 'delivery_realtime',
                      'pickup_volume', 'delivery_volume', 'performance', 'return_inventory', 'onhold_daily'))
-RPCS = frozenset(('publish_central_delivery_realtime', 'claim_delivery_realtime_once', 'advertise_spx_session_key', 'consume_spx_credentials', 'pulse_spx_session', 'finish_spx_session_refresh', 'control_data_source', 'pulse_data_source_worker', 'claim_data_source_job',
+RPCS = frozenset(('sync_pickup_point_catalog', 'publish_pickup_shop_volume', 'publish_central_delivery_realtime', 'claim_delivery_realtime_once', 'advertise_spx_session_key', 'consume_spx_credentials', 'pulse_spx_session', 'finish_spx_session_refresh', 'control_data_source', 'pulse_data_source_worker', 'claim_data_source_job',
                  'pulse_data_source_job', 'begin_data_source_publish', 'begin_data_source_inventory',
                  'finish_data_source_job', 'publish_central_pickup', 'bridge_combined_inventory', 'publish_central_returns', 'enqueue_due_data_sources', 'publish_central_onhold', 'record_central_onhold', 'finalize_onhold_days'))
 
