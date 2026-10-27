@@ -133,7 +133,7 @@ def open_gui(settings):
     worker_controls = ttk.Frame(container)
     worker_controls.pack(fill="x", before=output, pady=(0, 10))
 
-    ttk.Label(worker_controls, text="6 nguồn · Tự động / chu kỳ quản lý tại web → Nguồn dữ liệu").pack(side="left")
+    ttk.Label(worker_controls, text="9 nguồn · Tự động / chu kỳ quản lý tại web → Nguồn dữ liệu").pack(side="left")
 
     worker_status = tk.StringVar(value="Worker trung tâm: đã dừng")
     ttk.Label(container, textvariable=worker_status).pack(anchor="w", before=output, pady=(0, 8))
@@ -146,7 +146,7 @@ def open_gui(settings):
         worker_stop.clear()
         start_worker_button.configure(state="disabled")
         stop_worker_button.configure(state="normal")
-        worker_status.set("Worker trung tâm: đang chạy | 6 nguồn · tối đa 2 tác vụ song song")
+        worker_status.set("Worker trung tâm: đang chạy | 9 nguồn · tối đa 2 tác vụ song song")
 
         def worker_task():
             try:

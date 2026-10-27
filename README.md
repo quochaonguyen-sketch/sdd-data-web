@@ -1,5 +1,13 @@
 # SDD Web Data
 
+## Delivery Realtime Dashboard
+
+- Nguồn `delivery_realtime` lấy báo cáo tiến độ giao hàng SPX 10 phút, dùng cookie riêng và Supabase đích đã cấu hình của website. Dashboard `/realtime-dashboard` đọc bảng `realtime_delivery_riders` và tự cập nhật qua Supabase Realtime.
+- Mở `run_worker.cmd` để bật worker trung tâm chạy nền; trên web → Nguồn dữ liệu → **Delivery Realtime**, chạy ngay hoặc đặt lịch 600 giây. Máy chạy worker phải còn bật và có mạng.
+- Chạy một lần: `run_delivery_realtime.cmd`. Kiểm tra chỉ đọc: `run_delivery_realtime.cmd --dry-run`.
+- Triển khai SQL từ thư mục website: `node --env-file=.env --env-file=.env.local scripts/apply-delivery-realtime.cjs`. Kiểm tra giao dịch (rollback toàn bộ dữ liệu test): thêm `--test`. Cần có bảng realtime và control plane trước đó.
+- Mỗi snapshot ghi trong một giao dịch và chỉ service role được gọi hàm ghi; giữ dữ liệu cũ khi lỗi, thiếu dòng/bộ đếm, trùng rider, sai ngày hoặc timestamp nguồn cũ quá 30 phút. Thời điểm dashboard hiển thị là timestamp báo cáo SPX. Không lưu raw payload SPX.
+
 Project riêng phục vụ website `sdd-performance-project`, gồm **Volume Pickup**, **Volume Delivery** và **Performance rider**.
 
 ## Zone ID cũ và mới

@@ -38,8 +38,8 @@ class SourceTests(unittest.TestCase):
                     with RunLock(lock):
                         self.fail('Duplicate worker acquired daemon lock')
 
-    def test_only_eight_sources_and_argv_without_shell(self):
-        self.assertEqual(len(SOURCES), 8)
+    def test_only_nine_sources_and_argv_without_shell(self):
+        self.assertEqual(len(SOURCES), 9)
         for source in SOURCES:
             command = child_command({'source_id': source, 'id': '123', 'report_date': '2026-10-25'}, 'owner', Path('cancel'))
             self.assertIn(source, command)

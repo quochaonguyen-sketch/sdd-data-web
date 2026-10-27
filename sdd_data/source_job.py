@@ -98,6 +98,13 @@ def execute(settings, source, day, boundary, *, root=ROOT):
             boundary.begin()
             boundary.control.rpc('publish_central_returns', p_job=boundary.job, p_worker=boundary.worker,
                 p_rows=rows, p_complete=True, p_station=int(settings.station_id))
+        elif source == 'delivery_realtime':
+            from .delivery_realtime import prepare_delivery_realtime
+            stack.enter_context(RunLock(Path(root) / 'data' / 'delivery-realtime-worker.lock'))
+            rows, stamp = prepare_delivery_realtime(settings)
+            boundary.begin()
+            boundary.control.rpc('publish_central_delivery_realtime', p_job=boundary.job,
+                p_worker=boundary.worker, p_rows=rows, p_at=stamp.isoformat())
         elif source == 'pickup_realtime':
             from .pickup_realtime import RealtimeStore, sync_once
             original = RealtimeStore.request
