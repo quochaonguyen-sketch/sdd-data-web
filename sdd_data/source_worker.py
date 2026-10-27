@@ -84,7 +84,7 @@ def run_worker(settings, *, stop_event=None, concurrency=4, root=ROOT, job_timeo
                     stop.set()
                 try:
                     control.rpc('pulse_data_source_worker', p_worker=worker, p_hostname=socket.gethostname(),
-                                p_version='1.0', p_concurrency=concurrency)
+                                p_version='1.2-lh-dashboard', p_concurrency=concurrency)
                     try:
                         session_control.tick(control, worker)
                     except Exception:

@@ -97,6 +97,12 @@ def execute(settings, source, day, boundary, *, root=ROOT):
                     p_rows=night_events, p_started=night_stats['scan_started_at'])
             boundary.control.rpc('record_central_onhold', p_job=boundary.job, p_worker=boundary.worker,
                 p_events=events, p_input=stats['input'], p_excluded=stats['excluded'], p_started=stats['scan_started_at'])
+        elif source == 'linehaul':
+            from .linehaul import prepare_linehaul
+            rows, stamp = prepare_linehaul(settings, root=root)
+            boundary.begin()
+            boundary.control.rpc('publish_linehaul', p_job=boundary.job, p_worker=boundary.worker,
+                p_station=settings.station_id, p_rows=rows, p_at=stamp.isoformat())
         elif source == 'return_inventory':
             from .return_inventory import prepare_returns
             stack.enter_context(RunLock(Path(root) / 'data' / 'return-inventory-worker.lock'))
