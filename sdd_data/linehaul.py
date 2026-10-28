@@ -282,6 +282,7 @@ def prepare_linehaul(settings, root=ROOT):
                 previous = by_id.get(trip['lt_code'].upper())
                 if previous:
                     trip['trip_id'] = previous[1]['trip_id']
+                    trip['source'] = 'active'
                     for key in ('orders','bags','loose','load_total','pack_description','pack_unknown'):
                         if trip[key] is None or trip[key] == '':
                             trip[key] = previous[1][key]
@@ -292,15 +293,12 @@ def prepare_linehaul(settings, root=ROOT):
                             trip[key] = previous[1][key]
                     if trip['hub_unloaded_at']:
                         trip['phase'] = 'unloaded'
-                    elif previous[1]['phase'] == 'unloading':
-                        trip['phase'] = 'unloading'
-                        trip['source'] = 'active'
-                    elif previous[1]['phase'] == 'at_hub':
-                        trip['phase'] = 'at_hub'
-                        trip['source'] = 'active'
+                    else:
+                        trip['phase'] = previous[1]['phase']
                 else:
                     # Chuyến xe đã đến nhưng không còn bên tab đang điều phối -> đã hoàn tất xả hàng
                     trip['phase'] = 'unloaded'
+                    trip['source'] = 'dashboard'
                     if not trip['hub_unloaded_at']:
                         trip['hub_unloaded_at'] = trip['hub_ata']
                 by_id[trip['lt_code'].upper()] = (row,trip)
