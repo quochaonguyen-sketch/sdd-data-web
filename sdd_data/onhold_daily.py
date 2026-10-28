@@ -36,6 +36,7 @@ class OnholdClient(SpxClient):
             base['on_hold_times'] = '1,10'
         else:
             base['order_status'] = '5,2'
+            base['current_station_ids'] = self.settings.station_id
         # Changing OH statuses make offset pagination skip/duplicate rows even when
         # delivering_time is fixed. Read disjoint time buckets until each fits ONE
         # response. This is a complete scan, not a transactional SPX snapshot.
@@ -49,12 +50,14 @@ class OnholdClient(SpxClient):
                 if total != len(rows):
                     raise RuntimeError('Incomplete OH time bucket')
                 return list(rows)
-            if left >= right or depth >= 18:
+            if left >= right or depth >= 32:
                 raise RuntimeError('OH vượt giới hạn một giây; giữ nguyên pivot cũ để tránh thiếu đơn.')
             middle = (left + right) // 2
             return read(left, middle, depth+1) + read(middle+1, right, depth+1)
         step = 7200
         bounds = [(left, min(end, left+step-1)) for left in range(start, end+1, step)]
+        if getattr(self, 'overnight', False) and start > 0:
+            bounds.insert(0, (0, start-1))
         with ThreadPoolExecutor(max_workers=min(6, self.settings.workers)) as pool:
             rows = [row for batch in pool.map(lambda b: read(*b), bounds) for row in batch]
         ids = [first(row, 'shipment_id', 'sls_tracking_number').upper() for row in rows]
@@ -64,7 +67,7 @@ class OnholdClient(SpxClient):
 
 
 
-def aggregate(rows, mapping, day, station, home):
+def aggregate(rows, mapping, day, station, home, *, include_previous=False):
     counts, seen = Counter(), set()
     stats = {'input': len(rows), 'included': 0, 'excluded': 0, 'unmapped': 0}
     for row in rows:
@@ -77,7 +80,8 @@ def aggregate(rows, mapping, day, station, home):
         seen.add(sid)
         status = int(row.get('order_status') or 0)
         delivered = as_datetime(row.get('delivering_time'))
-        if status not in (1, 5) or not delivered or delivered.date() != day or not station_matches(row, station, home, day):
+        valid_day = delivered and (delivered.date() <= day if include_previous else delivered.date() == day)
+        if status not in (1, 5) or not valid_day or not station_matches(row, station, home, day):
             stats['excluded'] += 1
             continue
         zone = first(row, 'zone_id', 'zone_name', 'receiver_zone_id', 'buyer_zone_id')
@@ -118,17 +122,19 @@ def prepare_onhold(settings, day):
         client.close()
 
 
-def prepare_onhold_observations(settings, day, *, overnight=False):
+def prepare_onhold_observations(settings, day, *, overnight=False, through_day=None):
     """Send only day-scoped digests and pivot dimensions, never source order JSON."""
     day = date.fromisoformat(day) if isinstance(day, str) else day
     if day != datetime.now(TZ).date():
         raise ValueError('OH lũy kế chỉ thu thập ngày hiện tại; không tái dựng lịch sử từ trạng thái hiện tại.')
+    if through_day is not None and (not overnight or through_day > day):
+        raise ValueError('Khoảng bổ sung chỉ dùng cho Overnight và không vượt ngày hiện tại.')
     started = datetime.now(TZ).isoformat()
     mapping = load_coverage(settings)
     client = OnholdClient(settings)
     client.overnight = overnight
     try:
-        rows = client.fetch(day)
+        rows = client.fetch(through_day or day)
         events = []
         for row in rows:
             if overnight and (str(row.get('current_station_id') or '') != str(settings.station_id)
@@ -139,7 +145,7 @@ def prepare_onhold_observations(settings, day, *, overnight=False):
                     continue
                 # Internal cutoff code 1 means Delivering; SPX uses 2 (1 is hub received).
                 row = {**row, 'order_status': 1 if str(row['order_status']) == '2' else 5}
-            pivot, stats = aggregate([row], mapping, day, settings.station_id, '52-HCM SDD-01 Hub')
+            pivot, stats = aggregate([row], mapping, day, settings.station_id, '52-HCM SDD-01 Hub', include_previous=overnight)
             if not stats['included']:
                 continue
             cell = pivot[0]

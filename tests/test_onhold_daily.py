@@ -1,7 +1,7 @@
 import unittest
 import tempfile
 from pathlib import Path
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch, Mock
 from sdd_data.onhold_daily import aggregate, OnholdClient, station_matches, prepare_onhold_observations
@@ -30,7 +30,7 @@ class OHTests(unittest.TestCase):
             self.assertEqual(len(calls),int(due))
 
     def test_overnight_scan_includes_delivering_without_prior_onhold(self):
-        client=object.__new__(OnholdClient);client.settings=SimpleNamespace(workers=2)
+        client=object.__new__(OnholdClient);client.settings=SimpleNamespace(workers=2,station_id='4232')
         payloads=[]
         def post(payload):
             payloads.append(payload)
@@ -41,10 +41,12 @@ class OHTests(unittest.TestCase):
         self.assertTrue(payloads)
         self.assertTrue(all('on_hold_times' not in p for p in payloads))
         self.assertTrue(all(p['order_status']=='5,2' for p in payloads))
+        self.assertEqual(payloads[0]['delivering_time'].split(',')[0], '0')
+        self.assertTrue(all(p['current_station_ids']=='4232' for p in payloads))
         payloads.clear();client.overnight=False;client.fetch(DAY)
         self.assertTrue(all(p['on_hold_times']=='1,10' for p in payloads))
 
-    def test_overnight_requires_today_delivering_and_current_hub_rider(self):
+    def test_overnight_includes_prior_days_and_requires_current_hub_rider(self):
         today=datetime.now(TZ).date()
         stamp=int(datetime.combine(today,datetime.min.time(),TZ).timestamp())+3600
         valid=order('NIGHT',delivering_time=stamp,driver_id=123,order_status=2)
@@ -55,9 +57,22 @@ class OHTests(unittest.TestCase):
         with patch('sdd_data.onhold_daily.load_coverage',return_value={}),patch('sdd_data.onhold_daily.OnholdClient') as client:
             client.return_value.fetch.return_value=rows
             events,_=prepare_onhold_observations(SimpleNamespace(station_id='4232'),today,overnight=True)
-        self.assertEqual([e['order_code'] for e in events],['NIGHT'])
+        self.assertEqual([e['order_code'] for e in events],['NIGHT','OLD'])
         self.assertEqual(events[0]['status'],1)
+        self.assertEqual(datetime.fromisoformat(events[1]['delivering_at']).date(), today.fromordinal(today.toordinal()-1))
         self.assertEqual(datetime.fromisoformat(events[0]['delivering_at']).date(),today)
+
+    def test_supplement_only_reads_through_selected_prior_day(self):
+        today=datetime.now(TZ).date()
+        yesterday=today-timedelta(days=1)
+        with patch('sdd_data.onhold_daily.load_coverage',return_value={}),patch('sdd_data.onhold_daily.OnholdClient') as client:
+            client.return_value.fetch.return_value=[]
+            prepare_onhold_observations(SimpleNamespace(station_id='4232'),today,overnight=True,through_day=yesterday)
+            client.return_value.fetch.assert_called_once_with(yesterday)
+        with self.assertRaises(ValueError):
+            prepare_onhold_observations(Mock(),today,through_day=yesterday)
+        with self.assertRaises(ValueError):
+            prepare_onhold_observations(Mock(),today,overnight=True,through_day=today+timedelta(days=1))
 
     def test_current_area_mapping_dedup_and_pivot_privacy(self):
         mapping={'z6.old':{'district':'Quận 12','old_ward':'Phường Thạnh Lộc','area':'KV5'}}
@@ -83,18 +98,18 @@ class OHTests(unittest.TestCase):
         self.assertFalse(station_matches(row,4232,'Home',date(2026,10,24)))
 
     def test_fetch_rejects_duplicates_and_incomplete_pages(self):
-        client=object.__new__(OnholdClient);client.settings=SimpleNamespace(workers=2)
+        client=object.__new__(OnholdClient);client.settings=SimpleNamespace(workers=2,station_id='4232')
         client.post=lambda payload:{'total':2,'list':[order(),order()]}
         with self.assertRaisesRegex(RuntimeError,'pivot'):
             client.fetch(DAY)
 
     def test_empty_source_is_complete(self):
-        client=object.__new__(OnholdClient);client.settings=SimpleNamespace(workers=2)
+        client=object.__new__(OnholdClient);client.settings=SimpleNamespace(workers=2,station_id='4232')
         client.post=lambda payload:{'total':0,'list':[]}
         self.assertEqual(client.fetch(DAY),[])
 
     def test_recursive_time_buckets_are_disjoint_and_complete(self):
-        client=object.__new__(OnholdClient);client.settings=SimpleNamespace(workers=2)
+        client=object.__new__(OnholdClient);client.settings=SimpleNamespace(workers=2,station_id='4232')
         source=[order('A',delivering_time=epoch(8)+1),order('B',delivering_time=epoch(9)+1),order('C',delivering_time=epoch(10)+1)]
         def post(payload):
             left,right=map(int,payload['delivering_time'].split(','))
@@ -103,6 +118,21 @@ class OHTests(unittest.TestCase):
             return {'total':len(found),'list':found[:1]}
         client.post=post
         self.assertEqual({r['shipment_id'] for r in client.fetch(DAY)},{'A','B','C'})
+
+    def test_overnight_history_buckets_cover_prior_days_without_overlap(self):
+        client=object.__new__(OnholdClient)
+        client.settings=SimpleNamespace(workers=2,station_id='4232')
+        client.overnight=True
+        source=[order('OLD-A',delivering_time=epoch(8,20)),order('OLD-B',delivering_time=epoch(9,24)),order('TODAY')]
+        def post(payload):
+            left,right=map(int,payload['delivering_time'].split(','))
+            found=[r for r in source if left<=r['delivering_time']<=right]
+            return {'total':len(found),'list':found[:1]}
+        client.post=post
+        self.assertEqual({r['shipment_id'] for r in client.fetch(DAY)}, {'OLD-A','OLD-B','TODAY'})
+        # The ordinary OH daily pivot must still exclude prior days.
+        _,stats=aggregate(source,{},DAY,'4232','Home')
+        self.assertEqual(stats['included'],1)
 
     def test_arbitrary_reason_strings_never_persist(self):
         pivot,_=aggregate([order(on_hold_reason='a private note with order ID')],{},DAY,4232,'Home')
