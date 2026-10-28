@@ -16,7 +16,7 @@ def cache_file(root, day, kind):
 
 
 def context(settings,kind=None):
-    version="pickup-picked-at-noon-v3" if kind=="pickup" else 2
+    version="pickup-picked-through-13h-v4" if kind=="pickup" else 2
     return fingerprint([version,settings.supabase_url,settings.station_id])
 
 

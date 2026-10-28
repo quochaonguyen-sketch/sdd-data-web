@@ -88,7 +88,7 @@ def run_worker(settings, *, stop_event=None, concurrency=4, root=ROOT, job_timeo
                     stop.set()
                 try:
                     control.rpc('pulse_data_source_worker', p_worker=worker, p_hostname=socket.gethostname(),
-                                p_version='1.3-lh-dashboard-overnight-status', p_concurrency=concurrency)
+                                p_version='1.5-lh-dashboard-lh-unseal-pick13-overnight-status', p_concurrency=concurrency)
                     try:
                         session_control.tick(control, worker)
                     except Exception:

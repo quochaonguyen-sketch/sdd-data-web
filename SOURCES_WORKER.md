@@ -42,7 +42,7 @@ Worker quét mỗi 5 phút trong khung giờ đã cấu hình cho nguồn OH; c�
 
 Địa bàn, rider, lý do, giờ OH và trạng thái lấy tại lần đầu ghi nhận. Lý do dùng trường SPX `on_hold_reason__desc` nếu có, hoặc nhãn tiếng Anh nguyên bản từ launcher; mã chưa có nhãn để Unknown (code), không tự dịch. Pivot lưu quận, phường, mã/tên rider để xếp hạng trong khu vực. Rider không có dữ liệu giữ nhóm chưa rõ, không suy đoán. Đây là số mã OH, không phải tỷ lệ OH trên sản lượng rider.
 
-Tác vụ database `sdd-onhold-close-day` chạy 17:00 GMT (00:00 Việt Nam), đánh dấu chốt ngày cũ và xóa keys của ngày cũ, giữ nguyên pivot. Vẫn chốt khi PC worker tắt; worker cũng gọi finalize idempotent để bắt kịp nếu cron chậm. Không thể ghi lại ngày đã chốt hoặc ngày trước. Sau chốt lịch sử chỉ có các ô tổng hợp và metadata. Snapshot cũ được giữ ở archive aggregate, không cộng vào lũy kế do không có tập keys để khử trùng.
+Tác vụ database `sdd-onhold-close-day` chạy 17:00 GMT (00:00 Việt Nam), đánh dấu chốt ngày cũ; chỉ xóa keys và mã đơn chi tiết ngoài 7 ngày gần nhất theo lịch Việt Nam (giữ hôm nay + 6 ngày trước), giữ nguyên pivot. Vẫn chốt khi PC worker tắt; worker cũng gọi finalize idempotent để bắt kịp nếu cron chậm. Không thể ghi lại ngày đã chốt hoặc ngày trước. Sau chốt vẫn xem/xuất được danh sách mã đơn còn trong thời hạn 7 ngày; qua thời hạn chỉ giữ các ô tổng hợp và metadata. Snapshot cũ được giữ ở archive aggregate, không cộng vào lũy kế do không có tập keys để khử trùng.
 
 Trang hiển thị thời điểm bắt đầu thu thập, số lần quét, số mã mới của lượt gần nhất và trạng thái chốt. Không thể bảo đảm bắt được mã xuất hiện rồi biến mất hoàn toàn giữa hai lần quét hoặc trước lúc bắt đầu chạy; cần worker online và phiên SPX hợp lệ. Lịch sử bắt đầu từ lúc bật cơ chế thu thập. Bảng phường có thể chuyển sang quận; xếp hạng rider và lý do đều theo KV/ngày/bộ lọc trạng thái lúc ghi nhận.
 
@@ -59,3 +59,5 @@ Overnight nhiều ngày: lần quét chốt 23h đọc Delivering/Onhold tại h
 
 
 Bổ sung tức thời theo yêu cầu vận hành: `scripts/supplement-overnight-history.cjs` tại project web quét SPX mới chỉ đến ngày chốt đang hiển thị, thêm các mã cũ còn trên rider vào snapshot đã khóa gần nhất. Dùng `--test` để chạy đầy đủ trong giao dịch rollback trước khi áp dụng. Mã trùng bỏ qua hoàn toàn; ghi chú, trạng thái và thời gian chốt ban đầu không đổi. Dòng mới có added_after_cutoff_at; snapshot có supplemented_at/supplemented_count để web và CSV phân biệt trạng thái ghi nhận sau chốt với trạng thái 23h. Đây là thao tác bổ sung được người dùng yêu cầu riêng, không thay đổi quy tắc đóng băng tự động lúc 23h. Không lưu file raw nguồn.
+
+Nâng thời hạn giữ danh sách OH lên 7 ngày: tại project web chạy `node --env-file=.env --env-file=.env.local scripts/apply-onhold-retention.cjs` (thêm `--test` để kiểm thử rollback). Thay riêng finalizer đang được cron và worker gọi, không cần đổi lịch hay khởi động lại worker. Danh sách đã bị xóa trước khi nâng cấp không thể phục hồi từ pivot.

@@ -269,17 +269,28 @@ def prepare_linehaul(settings, root=ROOT):
     day = datetime.now(TZ).date()
     client = LinehaulClient(settings)
     path = root / 'data' / f'linehaul-locations-{settings.station_id}.json'
-    cached = read_cache(path)
-    cached = cached.get('trips', {}) if cached.get('day') == day.isoformat() else {}
+    cache_body = read_cache(path)
+    cached = cache_body.get('trips', {}) if cache_body.get('day') == day.isoformat() else {}
+    known = cache_body.get('known_trips', {}) if cache_body.get('day') == day.isoformat() else {}
     saved = {}
     try:
         active = client.trips(day)
+        active_codes = {str(row.get('trip_number') or row.get('id') or '').strip().upper() for row in active}
         completed = client.dashboard_trips()
         by_id = {trip['lt_code'].upper():(row,trip) for row in active if (trip:=build_trip(row,settings.station_id,day)) is not None}
+        known.update({code: trip['trip_id'] for code, (_, trip) in by_id.items()})
         for row in completed:
             trip = build_dashboard_trip(row,settings.station_id,day)
             if trip is not None:
                 previous = by_id.get(trip['lt_code'].upper())
+                if previous is None and (known_id := known.get(trip['lt_code'].upper())):
+                    try:
+                        detail = client.get('detail', {'trip_id': known_id})
+                        verified = build_trip(detail, settings.station_id, day)
+                        if verified and verified['lt_code'].upper() == trip['lt_code'].upper():
+                            previous = (detail, verified)
+                    except RuntimeError:
+                        log.warning('LH detail unavailable; using the complete first-API comparison for workflow status.')
                 if previous:
                     trip['trip_id'] = previous[1]['trip_id']
                     trip['source'] = 'active'
@@ -295,12 +306,10 @@ def prepare_linehaul(settings, root=ROOT):
                         trip['phase'] = 'unloaded'
                     else:
                         trip['phase'] = previous[1]['phase']
-                else:
-                    # Chuyến xe đã đến nhưng không còn bên tab đang điều phối -> đã hoàn tất xả hàng
+                # Only absence from the COMPLETE first API confirms completion by the operations rule.
+                if trip['lt_code'].upper() not in active_codes:
                     trip['phase'] = 'unloaded'
-                    trip['source'] = 'dashboard'
-                    if not trip['hub_unloaded_at']:
-                        trip['hub_unloaded_at'] = trip['hub_ata']
+                    trip['unload_confirmation'] = 'active_list_absence'
                 by_id[trip['lt_code'].upper()] = (row,trip)
         trips = list(by_id.values())
         def locate(pair):
@@ -348,7 +357,7 @@ def prepare_linehaul(settings, root=ROOT):
             result = list(pool.map(locate, trips))
         if datetime.now(TZ).date() != day:
             raise RuntimeError('LH đi qua nửa đêm; chạy lại để đúng ngày.')
-        write_cache(path, {'day':day.isoformat(), 'trips':saved})
+        write_cache(path, {'day':day.isoformat(), 'trips':saved, 'known_trips':known})
         log.info('LH hôm nay: %s chuyến tại hub, %s có GPS, %s lỗi vị trí.', len(result),sum(r.get('lat') is not None for r in result),sum(bool(r.get('location_error')) for r in result))
         return result, datetime.now(TZ)
     finally:

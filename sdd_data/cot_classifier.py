@@ -33,13 +33,13 @@ def classify_delivery_order_cot(order: dict) -> str:
 
 
 def classify_pickup_order_cot(order: dict) -> str:
-    """Phân loại COT cho một đơn pickup dựa trên mốc 12:00:
-    - Trước 12:00: COT 1
-    - Từ 12:00 trở đi: COT 2
+    """Phân loại COT cho một đơn pickup dựa trên mốc 13:00:
+    - Đến 13:00:00: COT 1
+    - Sau 13:00:00: COT 2
     """
     pick_dt = as_datetime(order.get("pickup_time"))
     if pick_dt is not None:
-        return "COT 1" if pick_dt.time() < time(12, 0) else "COT 2"
+        return "COT 1" if pick_dt.time() <= time(13, 0) else "COT 2"
     return ""
 
 

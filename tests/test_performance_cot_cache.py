@@ -23,9 +23,9 @@ class PerformanceCotCacheTests(unittest.TestCase):
     def test_pickup_cache_from_creation_time_rule_is_invalidated(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);s=settings(root)
-            save_cots(s,DAY,"pickup",[order("P1",13)],root)
+            save_cots(s,DAY,"pickup",[order("P1",14)],root)
             path=cache_file(root,DAY,"pickup");body=read_cache(path)
-            body["context"]=fingerprint([2,s.supabase_url,s.station_id])
+            body["context"]=fingerprint(["pickup-picked-at-noon-v3",s.supabase_url,s.station_id])
             write_cache(path,body)
             self.assertIsNone(read_cots(s,DAY,"pickup",root))
 
@@ -33,7 +33,7 @@ class PerformanceCotCacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);s=settings(root)
             save_cots(s,DAY,"delivery",[order("D1",9),order("D2",15)],root)
-            save_cots(s,DAY,"pickup",[order("P1",13)],root)
+            save_cots(s,DAY,"pickup",[order("P1",14)],root)
             with patch("sdd_data.performance_cot_cache.SpxClient",side_effect=AssertionError("Fresh sources already cached")):
                 result=load_cots(s,DAY,root)["A"]
             self.assertEqual(result["delivery_assigned_cot1"],1)
@@ -46,7 +46,7 @@ class PerformanceCotCacheTests(unittest.TestCase):
             root=Path(tmp);s=settings(root)
             save_cots(s,DAY,"delivery",[order("D1",9)],root)
             with patch("sdd_data.performance_cot_cache.SpxClient") as client:
-                client.return_value.fetch.return_value=[order("P1",13)]
+                client.return_value.fetch.return_value=[order("P1",14)]
                 result=load_cots(s,DAY,root)
             client.return_value.fetch.assert_called_once_with("pickup",DAY)
             client.return_value.close.assert_called_once()

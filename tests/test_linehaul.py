@@ -89,14 +89,14 @@ class LinehaulTests(unittest.TestCase):
         self.assertEqual(dashboard_packs(''),(None,None,''))
         self.assertEqual(dashboard_packs('new format'),(None,None,'new format'))
 
-    def test_dashboard_wins_duplicate_lt_without_gps_fetch(self):
+    def test_dashboard_order_totals_keep_active_phase_and_location_lookup(self):
         settings=SimpleNamespace(station_id='4232');live=raw(trip_number='LTTEST001')
         with tempfile.TemporaryDirectory() as folder,patch('sdd_data.linehaul.LinehaulClient') as cls:
             client=cls.return_value;client.trips.return_value=[live];client.dashboard_trips.return_value=[dashboard()]
             rows,_=prepare_linehaul(settings,Path(folder))
             self.assertEqual(len(rows),1);self.assertEqual(rows[0]['trip_id'],'1')
             self.assertEqual((rows[0]['orders'],rows[0]['bags'],rows[0]['loose']),(234,10,25))
-            self.assertIsNone(rows[0]['gps_at']);client.get.assert_not_called()
+            self.assertIsNone(rows[0]['gps_at']);self.assertEqual(rows[0]['source'],'active');client.get.assert_called_once_with('location', {'trip_id':'1'})
 
     def test_dashboard_order_total_keeps_actual_hub_unloading_evidence(self):
         settings=SimpleNamespace(station_id='4232');live=raw(trip_number='LTTEST001',order_loaded_quantity=-1,to_loaded_quantity=-1)
@@ -179,7 +179,24 @@ class LinehaulTests(unittest.TestCase):
         self.assertFalse(res_far['arrived_at_hub'])
         self.assertGreater(res_far['arrived_distance_km'], 10.0)
 
-    def test_dashboard_without_active_becomes_unloaded(self):
+    def test_missing_active_trip_counts_as_unloaded_but_keeps_real_event_times(self):
+        from sdd_data.linehaul import write_cache
+        settings=SimpleNamespace(station_id='4232')
+        detail=raw(trip_number='LTTEST001')
+        detail['trip_station'][1].update(ata=MID+1000,unseal_time=MID+1200)
+        with tempfile.TemporaryDirectory() as folder,patch('sdd_data.linehaul.LinehaulClient') as cls:
+            write_cache(Path(folder)/'data'/'linehaul-locations-4232.json',
+                {'day':DAY.isoformat(),'trips':{},'known_trips':{'LTTEST001':'1'}})
+            client=cls.return_value;client.trips.return_value=[];client.dashboard_trips.return_value=[dashboard()]
+            client.get.return_value=detail
+            rows,_=prepare_linehaul(settings,Path(folder))
+            self.assertEqual(rows[0]['phase'],'unloaded')
+            self.assertEqual(rows[0]['unload_confirmation'],'active_list_absence')
+            self.assertIsNone(rows[0]['hub_unloaded_at'])
+            self.assertIsNotNone(rows[0]['hub_unseal_at'])
+            self.assertIn(unittest.mock.call('detail',{'trip_id':'1'}),client.get.call_args_list)
+
+    def test_dashboard_without_active_is_unloaded_without_fabricating_unload_time(self):
         settings = SimpleNamespace(station_id='4232')
         with tempfile.TemporaryDirectory() as folder, patch('sdd_data.linehaul.LinehaulClient') as cls:
             client = cls.return_value; client.trips.return_value = []
@@ -187,4 +204,32 @@ class LinehaulTests(unittest.TestCase):
             rows, _ = prepare_linehaul(settings, Path(folder))
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]['phase'], 'unloaded')
-            self.assertEqual(rows[0]['hub_unloaded_at'], rows[0]['hub_ata'])
+            self.assertEqual(rows[0]['unload_confirmation'], 'active_list_absence')
+            self.assertIsNone(rows[0]['hub_unloaded_at'])
+
+    def test_present_in_first_api_preserves_arrived_and_unseal(self):
+        settings=SimpleNamespace(station_id='4232')
+        for unseal,expected in [(0,'at_hub'),(MID+1200,'unloading')]:
+            live=raw(trip_number='LTTEST001')
+            live['trip_station'][1].update(ata=MID+1000,unseal_time=unseal)
+            with tempfile.TemporaryDirectory() as folder,patch('sdd_data.linehaul.LinehaulClient') as cls:
+                client=cls.return_value;client.trips.return_value=[live];client.dashboard_trips.return_value=[dashboard()]
+                rows,_=prepare_linehaul(settings,Path(folder))
+                self.assertEqual(rows[0]['phase'],expected)
+                self.assertNotIn('unload_confirmation',rows[0])
+
+    def test_filtered_out_row_is_still_present_in_first_api(self):
+        settings=SimpleNamespace(station_id='4232')
+        with tempfile.TemporaryDirectory() as folder,patch('sdd_data.linehaul.LinehaulClient') as cls:
+            client=cls.return_value;client.trips.return_value=[raw(trip_number='LTTEST001',driver_name='')]
+            client.dashboard_trips.return_value=[dashboard()]
+            rows,_=prepare_linehaul(settings,Path(folder))
+            self.assertEqual(rows[0]['phase'],'at_hub')
+            self.assertNotIn('unload_confirmation',rows[0])
+
+    def test_failed_first_api_never_turns_dashboard_into_completed(self):
+        with tempfile.TemporaryDirectory() as folder,patch('sdd_data.linehaul.LinehaulClient') as cls:
+            cls.return_value.trips.side_effect=RuntimeError('incomplete first API')
+            with self.assertRaises(RuntimeError):
+                prepare_linehaul(SimpleNamespace(station_id='4232'),Path(folder))
+            cls.return_value.dashboard_trips.assert_not_called()
