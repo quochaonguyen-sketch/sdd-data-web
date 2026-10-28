@@ -54,8 +54,10 @@ def sync_once(settings):
         claim = control.rpc('claim_overnight_status_sync')
         if not claim:
             return None
-        client = SpxClient(settings)
-        rows = lookup_statuses(client, claim['orders'])
+        rows = []
+        if claim['orders']:
+            client = SpxClient(settings)
+            rows = lookup_statuses(client, claim['orders'])
         result = control.rpc('finish_overnight_status_sync', p_day=claim['day'], p_token=claim['token'], p_rows=rows)
         log.info('Overnight SPX: day=%s, synced=%s, resolved=%s', claim['day'], len(rows), result['resolved_count'])
         return result

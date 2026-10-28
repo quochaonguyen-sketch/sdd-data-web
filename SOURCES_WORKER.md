@@ -47,3 +47,9 @@ Tác vụ database `sdd-onhold-close-day` chạy 17:00 GMT (00:00 Việt Nam), �
 Trang hiển thị thời điểm bắt đầu thu thập, số lần quét, số mã mới của lượt gần nhất và trạng thái chốt. Không thể bảo đảm bắt được mã xuất hiện rồi biến mất hoàn toàn giữa hai lần quét hoặc trước lúc bắt đầu chạy; cần worker online và phiên SPX hợp lệ. Lịch sử bắt đầu từ lúc bật cơ chế thu thập. Bảng phường có thể chuyển sang quận; xếp hạng rider và lý do đều theo KV/ngày/bộ lọc trạng thái lúc ghi nhận.
 
 RPC control dùng JSON UTF-8 gọn, không mở rộng tên phường/địa chỉ thành Unicode escape. Khi triển khai bản sửa timeout, chỉ alter `publish_central_pickup` lên 120s và reload schema; không đổi các API khác. Tiến trình con source_job nạp code mới ở mỗi job nên không cần dừng worker đang chạy.
+
+
+## Đồng bộ trạng thái không ghi trùng
+Giữ hàng qua đêm: SPX chỉ kiểm tra các đơn chưa Delivered/Returned trong danh sách đã chốt. Chỉ cập nhật dòng đơn khi trạng thái thực sự đổi; kiểm tra không đổi vẫn cập nhật thời gian kiểm tra chung của ngày. Không thêm đơn vào danh sách đã chốt 23h. Nâng cấp bằng `node --env-file=.env --env-file=.env.local scripts/apply-overnight-status-sync.cjs` trong project web.
+
+Hàng trả: vẫn đọc đủ nguồn hiện tại để nhận trạng thái/tài xế mới và đơn đã rời tồn. Unique index theo shipment_id cùng upsert giữ nguyên khóa dòng đã có, chỉ chèn mã mới. Snapshot metadata vẫn đổi cho mọi dòng còn trong nguồn để tương thích bộ đọc snapshot hiện tại; loại đơn rời nguồn sau khi xác nhận đủ nguồn, trong cùng giao dịch. Tái sử dụng pickup_point_id trong Supabase và cache cục bộ; chỉ gọi pickup_info cho mã chưa có thông tin điểm. Áp dụng bằng `node --env-file=.env --env-file=.env.local scripts/apply-return-source-worker.cjs` trong project web, thêm `--test` để kiểm thử có rollback. Code enrichment Hàng trả được nạp ở tác vụ kế tiếp; nhánh tránh mở SPX khi danh sách kiểm tra rỗng được nạp khi worker trung tâm khởi động lại.

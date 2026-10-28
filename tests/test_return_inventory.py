@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from sdd_data.return_inventory import ReturnClient, build_returns, resolve_seller, return_points, UNKNOWN_AREA
+from sdd_data.return_inventory import ReturnClient, ReturnStore, build_returns, resolve_seller, return_points, UNKNOWN_AREA
 
 MAPPING = {'z3': {'area':'KV3','source_area':'KV4','district':'Quận Bình Tân','old_ward':'Phường Bình Hưng Hòa A','ward':'Phường Bình Hưng Hòa'},
            'z5': {'area':'KV5','source_area':'KV6','district':'Quận 12','old_ward':'Phường Tân Thới Hiệp','ward':'Phường Tân Thới Hiệp'}}
@@ -74,6 +74,25 @@ class ReturnTests(unittest.TestCase):
         client.get.return_value = {'shipment_id':'WRONG','pickup_info_list':[]}
         with tempfile.TemporaryDirectory() as folder, self.assertRaises(RuntimeError):
             return_points(settings, [row()], client, Path(folder))
+
+    def test_supabase_point_cache_only_fetches_new_shipment(self):
+        settings = SimpleNamespace(station_id='4232', workers=2)
+        client = Mock()
+        client.get.return_value = {'shipment_id':'NEW','pickup_info_list':[{'pickup_point_id':'P2'}]}
+        with tempfile.TemporaryDirectory() as folder:
+            self.assertEqual(return_points(settings, [row(), row('NEW')], client, Path(folder),
+                {'TEST': 'P1'}), {'TEST': 'P1', 'NEW': 'P2'})
+        client.get.assert_called_once_with('order/detail/pickup_info', {'shipment_id':'NEW','station_type':12})
+
+    def test_saved_points_paginate_and_scope_station(self):
+        store = ReturnStore.__new__(ReturnStore)
+        store.settings = SimpleNamespace(station_id='4232')
+        store.request = Mock(side_effect=[
+            [{'shipment_id':str(i),'pickup_point_id':'P1'} for i in range(500)],
+            [{'shipment_id':'LAST','pickup_point_id':'P2'}]])
+        self.assertEqual(len(store.saved_points()), 501)
+        self.assertEqual(store.request.call_args.args[2]['offset'], '500')
+        self.assertEqual(store.request.call_args.args[2]['current_station_id'], 'eq.4232')
 
 
 if __name__ == '__main__':

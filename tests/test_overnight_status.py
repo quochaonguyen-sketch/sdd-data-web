@@ -54,3 +54,12 @@ class OvernightStatusTests(unittest.TestCase):
         self.assertNotIn('private', finish.kwargs['p_error'])
         client.close.assert_called_once()
         control.close.assert_called_once()
+
+    def test_empty_claim_never_opens_spx(self):
+        control = Mock()
+        control.rpc.side_effect = [{'day': '2026-10-27', 'token': 'lease', 'orders': []},
+                                   {'success': True, 'resolved_count': 2, 'changed_count': 0}]
+        with patch('sdd_data.overnight_status.Control', return_value=control), patch('sdd_data.overnight_status.SpxClient') as spx:
+            self.assertEqual(sync_once(Mock())['changed_count'], 0)
+            spx.assert_not_called()
+        self.assertEqual(control.rpc.call_args.kwargs['p_rows'], [])

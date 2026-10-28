@@ -86,7 +86,20 @@ class SourceChanged(RuntimeError):
 
 
 class ReturnStore(WebsiteStore):
-    tables = ('riders',)
+    tables = ('riders', 'return_order_snapshots')
+
+    def saved_points(self):
+        result, offset = {}, 0
+        while True:
+            page = self.request('GET', 'return_order_snapshots', {
+                'select': 'shipment_id,pickup_point_id',
+                'current_station_id': f'eq.{self.settings.station_id}',
+                'pickup_point_id': 'neq.', 'order': 'shipment_id.asc',
+                'offset': str(offset), 'limit': '500'})
+            result.update({row['shipment_id']: row['pickup_point_id'] for row in page if row['pickup_point_id']})
+            if len(page) < 500:
+                return result
+            offset += 500
 
     def riders(self):
         result, offset = [], 0
@@ -99,13 +112,14 @@ class ReturnStore(WebsiteStore):
             offset += 500
 
 
-def return_points(settings, rows, client, root):
+def return_points(settings, rows, client, root, saved_points=None):
     cache_path = Path(root) / 'data' / f'return-points-{settings.station_id}.json'
     cache = {}
     if cache_path.is_file():
         body = json.loads(cache_path.read_text(encoding='utf-8'))
         if body.get('station_id') == settings.station_id:
             cache = {k: str(v) for k, v in body.get('points', {}).items() if v}
+    cache.update({k: str(v) for k, v in (saved_points or {}).items() if v})
     ids = {str(row['shipment_id']) for row in rows}
     # Existing positive pickup-point caches share the same station and identity contract.
     days = {dt.date().isoformat() for row in rows if (dt := as_datetime(row.get('create_time')))}
@@ -219,12 +233,13 @@ def prepare_returns(settings, root=ROOT):
             riders_future = pool.submit(store.riders)
             rows = orders_future.result()
             log.info('Hàng trả: đọc đủ %s đơn tại hub %s.', len(rows), settings.station_id)
+            riders = riders_future.result()
             with ThreadPoolExecutor(max_workers=2) as lookup_pool:
                 routes_future = lookup_pool.submit(points_client.routes)
-                points = return_points(settings, rows, points_client, root)
+                points = return_points(settings, rows, points_client, root, store.saved_points())
                 details = points_client.fetch_point_details(set(points.values()) - {''}, Path(root) / 'data')
                 routes, _ = routes_future.result()
-            result, stats = build_returns(rows, mapping_future.result(), wards_future.result(), points, routes, details, riders_future.result(), settings.station_id)
+            result, stats = build_returns(rows, mapping_future.result(), wards_future.result(), points, routes, details, riders, settings.station_id)
         artifact = Path(root) / 'data' / f'return-inventory-{datetime.now(TZ):%Y%m%d-%H%M%S-%f}.json'
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_text(json.dumps({'stats': stats, 'records': result}, ensure_ascii=False), encoding='utf-8')
