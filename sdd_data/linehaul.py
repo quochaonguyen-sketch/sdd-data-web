@@ -3,6 +3,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time, timedelta
 import logging
+import math
 import re
 import time as clock
 import threading
@@ -51,6 +52,15 @@ def packs(description):
     return (bags if known else None), (loose if known else None), ', '.join(unknown)
 
 
+def haversine_km(lat1, lon1, lat2, lon2):
+    r = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return r * c
+
+
 def gps_point(data):
     points = []
     for point in data.get('location_list') or []:
@@ -65,6 +75,34 @@ def gps_point(data):
         return {'lat': None, 'lng': None, 'gps_at': None}
     uploaded, lat, lng = max(points)
     return {'lat': lat, 'lng': lng, 'gps_at': stamp(uploaded)}
+
+
+def check_arrived_location(data, ata_ts, hub_lat, hub_lng):
+    if not ata_ts or hub_lat is None or hub_lng is None:
+        return {'arrived_lat': None, 'arrived_lng': None, 'arrived_at_hub': None, 'arrived_distance_km': None}
+    points = []
+    for point in data.get('location_list') or []:
+        try:
+            lat, lng = float(point['lat']), float(point['lng'])
+            uploaded = int(point['upload_time'])
+            if -90 <= lat <= 90 and -180 <= lng <= 180 and (lat or lng) and 0 < uploaded <= clock.time()+60:
+                points.append((uploaded, lat, lng))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not points:
+        return {'arrived_lat': None, 'arrived_lng': None, 'arrived_at_hub': None, 'arrived_distance_km': None}
+    candidates = [p for p in points if abs(p[0] - ata_ts) <= 1800]
+    pool = candidates if candidates else points
+    closest = min(pool, key=lambda p: abs(p[0] - ata_ts))
+    if abs(closest[0] - ata_ts) > 7200:
+        return {'arrived_lat': None, 'arrived_lng': None, 'arrived_at_hub': None, 'arrived_distance_km': None}
+    dist = round(haversine_km(closest[1], closest[2], hub_lat, hub_lng), 2)
+    return {
+        'arrived_lat': closest[1],
+        'arrived_lng': closest[2],
+        'arrived_distance_km': dist,
+        'arrived_at_hub': dist <= 1.0
+    }
 
 
 def dashboard_packs(description):
@@ -103,10 +141,11 @@ def build_dashboard_trip(raw, station, day):
             'driver_name':driver,'origin':str(raw.get('departed_station_name') or ''),
             'destination':str(raw.get('arrived_station_name') or ''),'direction':'inbound','phase':'at_hub','hub_sequence':0,
             'hub_eta':stamp(raw.get('trip_eta')),'hub_sta':stamp(raw.get('trip_sta')),'hub_ata':stamp(raw.get('trip_ata')),
-            'hub_atd':None,'hub_unloaded_at':None,'origin_atd':stamp(raw.get('trip_atd')),
+            'hub_atd':None,'hub_unseal_at':None,'hub_unloaded_at':None,'origin_atd':stamp(raw.get('trip_atd')),
             'orders':count(raw.get('trip_order_qty_td')),'load_total':count(raw.get('trip_to_qty_td')),
             'bags':bags,'loose':loose,'pack_description':description,'pack_unknown':unknown,
-            'expected_unload':None,'unloaded_units':None}
+            'expected_unload':None,'unloaded_units':None,
+            'arrived_lat':None,'arrived_lng':None,'arrived_at_hub':None,'arrived_distance_km':None}
 
 
 def build_trip(raw, station, day):
@@ -123,7 +162,11 @@ def build_trip(raw, station, day):
     index = stations.index(hub)
     unloaded_today = bool(hub.get('unloaded_time') and datetime.fromtimestamp(int(hub['unloaded_time']), TZ).date() == day)
     direction = 'outbound' if index == 0 else 'inbound' if index == len(stations)-1 else 'stopover'
-    phase = 'unloaded' if unloaded_today else 'departed' if hub.get('atd') else 'at_hub' if hub.get('ata') else 'en_route' if index and stations[index-1].get('atd') else 'waiting'
+    has_unsealed = bool(hub.get('unseal_time') and int(hub.get('unseal_time') or 0) > 0)
+    has_started_unload = bool((hub.get('unload_quantity') and int(hub.get('unload_quantity') or 0) > 0) or int(hub.get('trip_station_status') or 0) == 60)
+    phase = ('unloaded' if unloaded_today else 'departed' if hub.get('atd')
+             else 'unloading' if hub.get('ata') and (has_unsealed or has_started_unload)
+             else 'at_hub' if hub.get('ata') else 'en_route' if index and stations[index-1].get('atd') else 'waiting')
     bags, loose, unknown = packs(str(raw.get('pack_type') or ''))
     return {
         'trip_id': str(raw['id']), 'lt_code': str(raw.get('trip_number') or raw['id']),
@@ -135,11 +178,13 @@ def build_trip(raw, station, day):
         'direction': direction, 'phase': phase, 'hub_sequence': hub['sequence_number'],
         'hub_eta': stamp(hub.get('eta')), 'hub_sta': stamp(hub.get('sta')),
         'hub_ata': stamp(hub.get('ata')), 'hub_atd': stamp(hub.get('atd')),
+        'hub_unseal_at': stamp(hub.get('unseal_time')),
         'hub_unloaded_at': stamp(hub.get('unloaded_time')),
         'orders': count(raw.get('order_loaded_quantity')), 'bags': bags, 'loose': loose,
         'load_total': count(raw.get('to_loaded_quantity')), 'pack_description': str(raw.get('pack_type') or ''),
         'pack_unknown': unknown, 'expected_unload': count(hub.get('expect_unload_quantity')),
         'unloaded_units': count(hub.get('unload_quantity')),
+        'arrived_lat': None, 'arrived_lng': None, 'arrived_at_hub': None, 'arrived_distance_km': None
     }
 
 
@@ -241,10 +286,23 @@ def prepare_linehaul(settings, root=ROOT):
                         if trip[key] is None or trip[key] == '':
                             trip[key] = previous[1][key]
                     # Dashboard has order totals; the active source has hub unloading scans.
-                    for key in ('expected_unload', 'unloaded_units', 'hub_unloaded_at', 'hub_atd', 'hub_sequence', 'direction'):
-                        trip[key] = previous[1][key]
+                    for key in ('expected_unload', 'unloaded_units', 'hub_unseal_at', 'hub_unloaded_at', 'hub_atd', 'hub_sequence', 'direction',
+                                'arrived_lat', 'arrived_lng', 'arrived_at_hub', 'arrived_distance_km'):
+                        if previous[1].get(key) is not None:
+                            trip[key] = previous[1][key]
                     if trip['hub_unloaded_at']:
                         trip['phase'] = 'unloaded'
+                    elif previous[1]['phase'] == 'unloading':
+                        trip['phase'] = 'unloading'
+                        trip['source'] = 'active'
+                    elif previous[1]['phase'] == 'at_hub':
+                        trip['phase'] = 'at_hub'
+                        trip['source'] = 'active'
+                else:
+                    # Chuyến xe đã đến nhưng không còn bên tab đang điều phối -> đã hoàn tất xả hàng
+                    trip['phase'] = 'unloaded'
+                    if not trip['hub_unloaded_at']:
+                        trip['hub_unloaded_at'] = trip['hub_ata']
                 by_id[trip['lt_code'].upper()] = (row,trip)
         trips = list(by_id.values())
         def locate(pair):
@@ -255,27 +313,34 @@ def prepare_linehaul(settings, root=ROOT):
                 previous = {}
             if trip['source']=='dashboard' or trip['phase']=='unloaded':
                 return {**trip,'lat':None,'lng':None,'gps_at':None,'hub_lat':None,'hub_lng':None,
-                        'next_station':None,'location_error':None,'location_checked_at':None}
+                        'next_station':None,'location_error':None,'location_checked_at':None,
+                        'arrived_lat':trip.get('arrived_lat'),'arrived_lng':trip.get('arrived_lng'),
+                        'arrived_at_hub':trip.get('arrived_at_hub'),'arrived_distance_km':trip.get('arrived_distance_km')}
             now = clock.time()
-            ttl = 600 if trip['phase'] == 'departed' or (trip['phase']=='waiting' and not previous.get('location',{}).get('gps_at') and not previous.get('location',{}).get('location_error')) else 60
+            ttl = 600 if trip['phase'] in ('departed', 'at_hub', 'unloading') or (trip['phase']=='waiting' and not previous.get('location',{}).get('gps_at') and not previous.get('location',{}).get('location_error')) else 60
             if previous.get('signature') == signature and 0 <= now-previous.get('at', 0) < ttl:
                 location = previous['location']
             else:
                 try:
                     data = client.get('location', {'trip_id': trip['trip_id']})
-                    location = {**gps_point(data), 'hub_lat': None, 'hub_lng': None,
-                                'location_error': None, 'location_checked_at': datetime.now(TZ).isoformat(), 'next_station': None}
+                    hub_lat_val, hub_lng_val = None, None
                     for station in data.get('trip_station') or []:
                         if str(station.get('station_id')) == str(settings.station_id) and station.get('sequence_number') == trip['hub_sequence']:
                             lat, lng = station.get('lat'), station.get('lng')
                             if isinstance(lat,(int,float)) and isinstance(lng,(int,float)) and -90<=lat<=90 and -180<=lng<=180 and (lat or lng):
-                                location.update(hub_lat=lat, hub_lng=lng)
+                                hub_lat_val, hub_lng_val = lat, lng
+                    location = {**gps_point(data), 'hub_lat': hub_lat_val, 'hub_lng': hub_lng_val,
+                                'location_error': None, 'location_checked_at': datetime.now(TZ).isoformat(), 'next_station': None}
+                    for station in data.get('trip_station') or []:
                         if station.get('sequence_number') == data.get('next_sequence_number'):
                             location['next_station'] = station.get('station_name')
                     if data.get('next_sequence_number') == trip['hub_sequence'] and data.get('eta'):
                         location['hub_eta'] = stamp(data['eta'])
+                    ata_ts = int(datetime.fromisoformat(trip['hub_ata']).timestamp()) if trip.get('hub_ata') else None
+                    arrived_check = check_arrived_location(data, ata_ts, hub_lat_val, hub_lng_val)
+                    location.update(arrived_check)
                 except (RuntimeError, ValueError, TypeError, KeyError):
-                    location = {**previous.get('location', {'lat':None,'lng':None,'gps_at':None,'hub_lat':None,'hub_lng':None,'next_station':None}),
+                    location = {**previous.get('location', {'lat':None,'lng':None,'gps_at':None,'hub_lat':None,'hub_lng':None,'next_station':None,'arrived_lat':None,'arrived_lng':None,'arrived_at_hub':None,'arrived_distance_km':None}),
                                 'location_error':'Chưa cập nhật được GPS; vị trí cũ nếu có.', 'location_checked_at':datetime.now(TZ).isoformat()}
             saved[trip['trip_id']] = {'at':now, 'signature':signature, 'location':location}
             if len(saved) % 20 == 0:

@@ -142,3 +142,49 @@ class LinehaulTests(unittest.TestCase):
         with patch('sdd_data.linehaul.prepare_linehaul',return_value=([],datetime.now(TZ))):
             execute(SimpleNamespace(station_id='4232'),'linehaul',DAY.isoformat(),boundary)
         self.assertEqual(events,['boundary','write'])
+
+    def test_unloading_phase_on_unseal_or_partial_unload(self):
+        r_unseal = raw()
+        r_unseal['trip_station'][1].update(ata=MID+1000, unseal_time=MID+1200)
+        trip = build_trip(r_unseal, '4232', DAY)
+        self.assertEqual(trip['phase'], 'unloading')
+        self.assertIsNotNone(trip['hub_unseal_at'])
+
+        r_unload = raw()
+        r_unload['trip_station'][1].update(ata=MID+1000, unload_quantity=5, expect_unload_quantity=10)
+        trip2 = build_trip(r_unload, '4232', DAY)
+        self.assertEqual(trip2['phase'], 'unloading')
+
+        r_status60 = raw()
+        r_status60['trip_station'][1].update(ata=MID+1000, trip_station_status=60)
+        trip3 = build_trip(r_status60, '4232', DAY)
+        self.assertEqual(trip3['phase'], 'unloading')
+
+        r_arrived = raw()
+        r_arrived['trip_station'][1].update(ata=MID+1000)
+        trip4 = build_trip(r_arrived, '4232', DAY)
+        self.assertEqual(trip4['phase'], 'at_hub')
+
+    def test_arrived_location_verification(self):
+        from sdd_data.linehaul import check_arrived_location
+        hub_lat, hub_lng = 10.819469, 106.672067
+        ata = MID + 2000
+        near_points = {'location_list': [{'lat': 10.819, 'lng': 106.675, 'upload_time': ata - 60}]}
+        res_near = check_arrived_location(near_points, ata, hub_lat, hub_lng)
+        self.assertTrue(res_near['arrived_at_hub'])
+        self.assertLess(res_near['arrived_distance_km'], 1.0)
+
+        far_points = {'location_list': [{'lat': 10.95, 'lng': 106.67, 'upload_time': ata - 30}]}
+        res_far = check_arrived_location(far_points, ata, hub_lat, hub_lng)
+        self.assertFalse(res_far['arrived_at_hub'])
+        self.assertGreater(res_far['arrived_distance_km'], 10.0)
+
+    def test_dashboard_without_active_becomes_unloaded(self):
+        settings = SimpleNamespace(station_id='4232')
+        with tempfile.TemporaryDirectory() as folder, patch('sdd_data.linehaul.LinehaulClient') as cls:
+            client = cls.return_value; client.trips.return_value = []
+            client.dashboard_trips.return_value = [dashboard(trip_number='LTGONE01')]
+            rows, _ = prepare_linehaul(settings, Path(folder))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]['phase'], 'unloaded')
+            self.assertEqual(rows[0]['hub_unloaded_at'], rows[0]['hub_ata'])
