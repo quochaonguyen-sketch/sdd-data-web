@@ -98,6 +98,17 @@ class LinehaulTests(unittest.TestCase):
             self.assertEqual((rows[0]['orders'],rows[0]['bags'],rows[0]['loose']),(234,10,25))
             self.assertIsNone(rows[0]['gps_at']);client.get.assert_not_called()
 
+    def test_dashboard_order_total_keeps_actual_hub_unloading_evidence(self):
+        settings=SimpleNamespace(station_id='4232');live=raw(trip_number='LTTEST001',order_loaded_quantity=-1,to_loaded_quantity=-1)
+        live['trip_station'][1].update(ata=MID+2000,expect_unload_quantity=12,unload_quantity=12,unloaded_time=MID+2500)
+        with tempfile.TemporaryDirectory() as folder,patch('sdd_data.linehaul.LinehaulClient') as cls:
+            client=cls.return_value;client.trips.return_value=[live];client.dashboard_trips.return_value=[dashboard(trip_order_qty_td=71,trip_to_qty_td=12)]
+            rows,_=prepare_linehaul(settings,Path(folder))
+            self.assertEqual(len(rows),1)
+            self.assertEqual((rows[0]['orders'],rows[0]['load_total'],rows[0]['expected_unload'],rows[0]['unloaded_units']),(71,12,12,12))
+            self.assertIsNotNone(rows[0]['hub_unloaded_at']);self.assertEqual(rows[0]['phase'],'unloaded')
+            client.get.assert_not_called()
+
     def test_duplicate_or_missing_pages_never_become_a_complete_snapshot(self):
         client=LinehaulClient.__new__(LinehaulClient)
         client.get=Mock(return_value={'total':2,'list':[{'id':1},{'id':1}]})

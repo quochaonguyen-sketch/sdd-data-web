@@ -34,6 +34,8 @@ class OnholdClient(SpxClient):
         base = {'delivering_time': f'{start},{end}', 'order_status': '5,1', 'count': 200}
         if not getattr(self, 'overnight', False):
             base['on_hold_times'] = '1,10'
+        else:
+            base['order_status'] = '5,2'
         # Changing OH statuses make offset pagination skip/duplicate rows even when
         # delivering_time is fixed. Read disjoint time buckets until each fits ONE
         # response. This is a complete scan, not a transactional SPX snapshot.
@@ -132,6 +134,11 @@ def prepare_onhold_observations(settings, day, *, overnight=False):
             if overnight and (str(row.get('current_station_id') or '') != str(settings.station_id)
                               or first(row, 'driver_id', 'rider_id', 'driverId') in ('', '0', 'unknown')):
                 continue
+            if overnight:
+                if str(row.get('order_status')) not in ('2', '5'):
+                    continue
+                # Internal cutoff code 1 means Delivering; SPX uses 2 (1 is hub received).
+                row = {**row, 'order_status': 1 if str(row['order_status']) == '2' else 5}
             pivot, stats = aggregate([row], mapping, day, settings.station_id, '52-HCM SDD-01 Hub')
             if not stats['included']:
                 continue

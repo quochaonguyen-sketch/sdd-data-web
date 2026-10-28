@@ -240,6 +240,11 @@ def prepare_linehaul(settings, root=ROOT):
                     for key in ('orders','bags','loose','load_total','pack_description','pack_unknown'):
                         if trip[key] is None or trip[key] == '':
                             trip[key] = previous[1][key]
+                    # Dashboard has order totals; the active source has hub unloading scans.
+                    for key in ('expected_unload', 'unloaded_units', 'hub_unloaded_at', 'hub_atd', 'hub_sequence', 'direction'):
+                        trip[key] = previous[1][key]
+                    if trip['hub_unloaded_at']:
+                        trip['phase'] = 'unloaded'
                 by_id[trip['lt_code'].upper()] = (row,trip)
         trips = list(by_id.values())
         def locate(pair):

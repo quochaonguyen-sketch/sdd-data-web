@@ -77,6 +77,10 @@ def run_worker(settings, *, stop_event=None, concurrency=4, root=ROOT, job_timeo
     (Path(root) / 'logs').mkdir(exist_ok=True)
     with RunLock(work / 'daemon.lock'):
         stop_request.unlink(missing_ok=True)
+        from .overnight_status import run_worker as run_overnight_status
+        overnight_thread = threading.Thread(target=run_overnight_status, kwargs={'settings': settings, 'stop_event': stop},
+                                            daemon=True, name='overnight-status')
+        overnight_thread.start()
         log.info('Central worker online: %s, max parallel=%s', worker, concurrency)
         try:
             while not stop.is_set() or children:
@@ -84,7 +88,7 @@ def run_worker(settings, *, stop_event=None, concurrency=4, root=ROOT, job_timeo
                     stop.set()
                 try:
                     control.rpc('pulse_data_source_worker', p_worker=worker, p_hostname=socket.gethostname(),
-                                p_version='1.2-lh-dashboard', p_concurrency=concurrency)
+                                p_version='1.3-lh-dashboard-overnight-status', p_concurrency=concurrency)
                     try:
                         session_control.tick(control, worker)
                     except Exception:
@@ -141,6 +145,8 @@ def run_worker(settings, *, stop_event=None, concurrency=4, root=ROOT, job_timeo
                 else:
                     stop.wait(5)
         finally:
+            stop.set()
+            overnight_thread.join(timeout=5)
             session_control.close()
             control.close()
             stop_request.unlink(missing_ok=True)

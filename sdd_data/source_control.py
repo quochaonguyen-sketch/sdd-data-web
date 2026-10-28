@@ -1,11 +1,12 @@
 """Private RPC client for the allowlisted source control plane. Never accepts a shell command."""
 import requests
+import json
 
 SOURCES = frozenset(('pickup_inventory', 'delivery_inventory', 'pickup_realtime', 'delivery_realtime',
                      'pickup_volume', 'delivery_volume', 'performance', 'return_inventory', 'onhold_daily', 'linehaul'))
 RPCS = frozenset(('sync_pickup_point_catalog', 'publish_pickup_shop_volume', 'publish_central_delivery_realtime', 'claim_delivery_realtime_once', 'advertise_spx_session_key', 'consume_spx_credentials', 'pulse_spx_session', 'finish_spx_session_refresh', 'control_data_source', 'pulse_data_source_worker', 'claim_data_source_job',
                  'pulse_data_source_job', 'begin_data_source_publish', 'begin_data_source_inventory',
-                 'finish_data_source_job', 'publish_central_pickup', 'bridge_combined_inventory', 'publish_central_returns', 'enqueue_due_data_sources', 'publish_central_onhold', 'record_central_onhold', 'finalize_onhold_days', 'overnight_hold_capture_due', 'publish_overnight_hold', 'publish_linehaul'))
+                 'finish_data_source_job', 'publish_central_pickup', 'bridge_combined_inventory', 'publish_central_returns', 'enqueue_due_data_sources', 'publish_central_onhold', 'record_central_onhold', 'finalize_onhold_days', 'overnight_hold_capture_due', 'publish_overnight_hold', 'publish_linehaul', 'claim_overnight_status_sync', 'finish_overnight_status_sync'))
 
 
 class Control:
@@ -18,8 +19,10 @@ class Control:
     def rpc(self, name, **payload):
         if name not in RPCS:
             raise ValueError('RPC not allowed')
-        response = self.session.post(self.url + 'rpc/' + name, json=payload,
-                                     timeout=90 if name == 'publish_central_pickup' else 20,
+        # Compact UTF-8 avoids expanding every Vietnamese label into repeated Unicode escapes.
+        body = json.dumps(payload, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')
+        response = self.session.post(self.url + 'rpc/' + name, data=body,
+                                     timeout=150 if name == 'publish_central_pickup' else 20,
                                      allow_redirects=False)
         if not response.ok:
             # Keep service keys, request URLs and remote exception payloads out of browser logs.

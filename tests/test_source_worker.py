@@ -22,7 +22,7 @@ class SourceTests(unittest.TestCase):
                     return True
                 return None
             control.rpc.side_effect = rpc
-            with patch('sdd_data.source_worker.Control', return_value=control), patch('sdd_data.source_worker.SessionControl'), patch.object(stop, 'wait', return_value=False), patch('sdd_data.source_worker.time.sleep'):
+            with patch('sdd_data.source_worker.Control', return_value=control), patch('sdd_data.source_worker.SessionControl'), patch('sdd_data.overnight_status.run_worker'), patch.object(stop, 'wait', return_value=False), patch('sdd_data.source_worker.time.sleep'):
                 run_worker(Mock(), root=root, stop_event=stop)
             self.assertTrue(stop.is_set())
             self.assertEqual(sum(c.args[0] == 'claim_data_source_job' for c in control.rpc.call_args_list), 1)
