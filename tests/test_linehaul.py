@@ -80,8 +80,27 @@ class LinehaulTests(unittest.TestCase):
         self.assertIsNone(trip['hub_unloaded_at']);self.assertIsNone(trip['hub_atd']);self.assertIsNone(trip['unloaded_units'])
         self.assertEqual(trip['origin_atd'],datetime.fromtimestamp(MID+300,TZ).isoformat())
         for extra in [{'driver_name':''},{'driver_id':0},{'station_id':1},{'arrived_station_id':1},
-                      {'trip_ata':MID-1},{'trip_sta':MID-1},{'trip_ata':0},{'trip_status':2}]:
+                      {'trip_ata':MID-1},{'trip_ata':MID+86400},{'trip_ata':0},{'trip_status':2}]:
             self.assertIsNone(build_dashboard_trip(dashboard(**extra),'4232',DAY))
+
+    def test_dashboard_history_uses_actual_arrival_day_even_with_earlier_or_missing_sta(self):
+        for sta in (MID-7200, MID-86400, 0, None):
+            with self.subTest(sta=sta):
+                trip=build_dashboard_trip(dashboard(trip_sta=sta),'4232',DAY)
+                self.assertIsNotNone(trip)
+                self.assertEqual(trip['trip_day'],DAY.isoformat())
+                self.assertEqual(trip['phase'],'at_hub')
+                self.assertEqual(trip['hub_sta'],datetime.fromtimestamp(sta,TZ).isoformat() if sta else None)
+
+    def test_overnight_arrival_is_published_once_with_dashboard_load(self):
+        with tempfile.TemporaryDirectory() as folder,patch('sdd_data.linehaul.LinehaulClient') as cls:
+            client=cls.return_value;client.trips.return_value=[]
+            client.dashboard_trips.return_value=[dashboard(trip_number='LT0QAT51NEMO1',trip_sta=MID-7200,trip_order_qty_td=1116)]
+            rows,_=prepare_linehaul(SimpleNamespace(station_id='4232'),Path(folder))
+            self.assertEqual(len(rows),1)
+            self.assertEqual((rows[0]['lt_code'],rows[0]['trip_day'],rows[0]['orders']),('LT0QAT51NEMO1',DAY.isoformat(),1116))
+            self.assertIsNone(rows[0]['hub_unloaded_at'])
+            client.get.assert_not_called()
 
     def test_dashboard_pack_type_is_quantity_last(self):
         self.assertEqual(dashboard_packs('Bao 90x70 10,Other 25'),(10,25,''))

@@ -129,8 +129,7 @@ def build_dashboard_trip(raw, station, day):
         return None
     if not raw.get('driver_id') or str(raw.get('driver_id')) == '0' or driver in ('', '-', '--'):
         return None
-    if not raw.get('trip_sta') or datetime.fromtimestamp(int(raw['trip_sta']),TZ).date()!=day:
-        return None
+    # Actual arrival defines the history day, including trips delayed overnight.
     # Dashboard ATA is arrival; it is not an unloading completion timestamp.
     if str(raw.get('trip_status')) != '3' or not raw.get('trip_ata') or datetime.fromtimestamp(int(raw['trip_ata']),TZ).date()!=day:
         return None
