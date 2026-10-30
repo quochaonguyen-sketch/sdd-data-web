@@ -34,3 +34,9 @@ COT Pick chỉ xét pickup_time hợp lệ, theo Asia/Ho_Chi_Minh: trước 12:0
 Đã fetch lại nguồn Pickup ngày 25 và 26, tạo artifact performance-picked-time-corrected-YYYY-MM-DD.json. Snapshot trước sửa: data/performance-cot-backup/picked-time-YYYY-MM-DD-before.json. Bước backfill dùng guard tổng official và chỉ thay phân loại; Delivery, tổng Performance và fetched_at giữ nguyên. Source artifacts và số đếm picked là theo tập đơn nguồn Volume được đọc, không đại diện toàn bộ SPX ngoài phạm vi nguồn.
 
 Test: trước 12h, đúng 12h, sau 12h, timestamp milliseconds, thiếu/0/hỏng pickup_time không lấy giờ tạo/giao thay thế, cache phiên bản cũ bị vô hiệu. Full suite: 188 tests, 1 skipped.
+
+
+## Mốc mới theo yêu cầu 28/10/2026
+Pick Performance dùng pickup_time thực theo giờ Việt Nam: đến đúng 13:00:00 thuộc COT1; sau 13:00:00 thuộc COT2. Thay context cache Pickup thành pickup-picked-through-13h-v4 để không đọc lại số phân COT theo mốc 12h. Delivery, Volume/Tồn Pickup và COT lịch của rider không đổi. Cảnh báo vàng trên Performance chỉ cho rider lịch COT2 có pickup_picked_cot1 > 0, không dùng số được phân hoặc phần thiếu giờ để suy ra vi phạm.
+
+Chạy prisma/performance-pickup-cot13.sql qua admin-audit-db.cjs và khởi động worker mới để chỉ worker có marker pick13 nhận job Performance; version phải không quá 28 ký tự. Ngày đã lưu cần đồng bộ lại ngày đó để chia Pick theo mốc mới. Bộ lọc thời gian trên web dùng cùng một ô chọn ngày/khoảng ngày; hai mốc trùng nhau trở thành chọn một ngày, vẫn giữ KV/địa bàn/COT/từ khóa khi đổi ngày.

@@ -9,6 +9,12 @@ from sdd_data.source_control import SOURCES
 
 
 class SourceTests(unittest.TestCase):
+    def test_capability_markers_fit_server_version_field(self):
+        from sdd_data.source_worker import WORKER_VERSION
+        self.assertLessEqual(len(WORKER_VERSION), 28)
+        self.assertIn("pick13", WORKER_VERSION)
+        self.assertIn("lh-unseal", WORKER_VERSION)
+
     def test_stop_file_shuts_down_daemon_without_claiming_more_work(self):
         from sdd_data.source_worker import run_worker
         with tempfile.TemporaryDirectory() as folder:
