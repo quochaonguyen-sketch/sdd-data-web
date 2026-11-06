@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from sdd_data.transform import TZ
-from sdd_data.wh_tracking import WhClient, build_rows, pending_receive_timestamp, prepare_wh
+from sdd_data.wh_tracking import WhClient, build_rows, pending_receive_timestamp, prepare_wh, load_wh_cache, save_wh_cache
 from sdd_data.source_job import execute
 
 
@@ -96,6 +96,70 @@ class WhTests(unittest.TestCase):
             with patch('sdd_data.wh_tracking.prepare_wh', return_value=([], datetime.now(TZ))):
                 execute(settings, 'wh_tracking', '2026-11-06', boundary, root=Path(folder))
             self.assertEqual(boundary.control.rpc.call_args.args[0], 'publish_wh_tracking')
+
+    def test_fetch_api_stops_at_past_delivered_boundary(self):
+        day = date(2026, 11, 6)
+        today_ts = int(datetime(2026, 11, 6, 12, 0, tzinfo=TZ).timestamp())
+        yesterday_ts = int(datetime(2026, 11, 5, 15, 0, tzinfo=TZ).timestamp())
+
+        p1 = [
+            order('ACTIVE', status=2),
+            order('TODAY_DELIV', status=4, delivered_time=today_ts),
+            order('YESTERDAY_DELIV', status=4, delivered_time=yesterday_ts),
+        ]
+        p2 = [order('OLD2', status=4, delivered_time=yesterday_ts)]
+        client = self.client([{'list': p1, 'total': 1000}, {'list': p2, 'total': 1000}])
+        client.day = day
+        client.cache = {'day': day.isoformat(), 'known_past_delivered': set()}
+
+        rows = client.fetch_api(1)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([r['shipment_id'] for r in rows], ['ACTIVE', 'TODAY_DELIV'])
+        self.assertEqual(client.post.call_count, 1)
+        self.assertIn('YESTERDAY_DELIV', client.cache['known_past_delivered'])
+
+    def test_prepare_wh_caches_soc_pending_and_skips_refetch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            today_ts = int(datetime(2026, 11, 6, 12, 0, tzinfo=TZ).timestamp())
+            ord1 = order('ORD1', status=4, delivered_time=today_ts)
+            client = Mock()
+            client.fetch_api.side_effect = [[ord1], []]
+            client.tracking.return_value = '2026-11-06T10:00:00+07:00'
+            settings = Mock(workers=4, station_id='4232')
+
+            with patch('sdd_data.wh_tracking.load_coverage', return_value={}), patch('sdd_data.wh_tracking.WhClient', return_value=client):
+                rows, _ = prepare_wh(settings, Path(folder))
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]['soc_pending_at'], '2026-11-06T10:00:00+07:00')
+            client.tracking.assert_called_once_with('ORD1')
+
+            client.tracking.reset_mock()
+            client.fetch_api.side_effect = [[ord1], []]
+            with patch('sdd_data.wh_tracking.load_coverage', return_value={}), patch('sdd_data.wh_tracking.WhClient', return_value=client):
+                rows2, _ = prepare_wh(settings, Path(folder))
+
+            self.assertEqual(len(rows2), 1)
+            self.assertEqual(rows2[0]['soc_pending_at'], '2026-11-06T10:00:00+07:00')
+            client.tracking.assert_not_called()
+
+    def test_cache_day_rollover_moves_delivered_to_past(self):
+        with tempfile.TemporaryDirectory() as folder:
+            cache_file = Path(folder) / 'data' / 'wh-tracking-4232.json'
+            today = date(2026, 11, 6)
+            save_wh_cache(cache_file, {
+                'day': '2026-11-05',
+                'soc_pending': {'ORD_OLD': '2026-11-05T10:00:00+07:00'},
+                'known_past_delivered': {'ORD_ANCIENT'},
+                'delivered_today': {'ORD_OLD': {'shipment_id': 'ORD_OLD'}}
+            })
+
+            loaded = load_wh_cache(cache_file, today)
+            self.assertEqual(loaded['day'], '2026-11-06')
+            self.assertIn('ORD_OLD', loaded['known_past_delivered'])
+            self.assertIn('ORD_ANCIENT', loaded['known_past_delivered'])
+            self.assertEqual(loaded['delivered_today'], {})
+            self.assertEqual(loaded['soc_pending']['ORD_OLD'], '2026-11-05T10:00:00+07:00')
 
 
 if __name__ == '__main__':

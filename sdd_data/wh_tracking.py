@@ -3,12 +3,14 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import logging
+from pathlib import Path
 import time
 import requests
 
 from .clients import AuthenticationError, SpxClient, load_coverage
 from .config import ROOT, Settings
 from .onhold_daily import first, REASONS
+from .pickup_cache import read_cache, write_cache
 from .runner import configure_logging
 from .transform import TZ, as_datetime, match_zone, operating_area
 
@@ -43,8 +45,12 @@ class WhClient(SpxClient):
                    if api == 1 else {'station_ids': self.settings.station_id, 'order_status': '0,7'})}
 
     def fetch_api(self, api):
+        day = getattr(self, 'day', None)
+        cache = getattr(self, 'cache', None)
+        past_delivered = set(cache.get('known_past_delivered', [])) if cache else set()
         for attempt in range(2):
             rows, seen, total, valid = [], set(), None, True
+            hit_past_delivered = False
             for page in range(1, 501):
                 data = self.post(self.payload(api, page))
                 raw_total = data['total']
@@ -64,13 +70,32 @@ class WhClient(SpxClient):
                     valid = False
                     break
                 seen.update(ids)
-                rows.extend(batch)
+
+                if api == 1 and day is not None:
+                    for row in batch:
+                        sid = order_id(row)
+                        is_delivered = str(row.get('order_status')) == '4'
+                        if is_delivered:
+                            deliv_dt = as_datetime(row.get('delivered_time'))
+                            if (deliv_dt and deliv_dt.date() < day) or sid in past_delivered:
+                                hit_past_delivered = True
+                                past_delivered.add(sid)
+                                continue
+                        rows.append(row)
+                    if hit_past_delivered:
+                        valid = True
+                        break
+                else:
+                    rows.extend(batch)
+
                 if len(rows) >= total or not batch:
                     valid = len(rows) == total
                     break
             else:
-                valid = False
+                valid = hit_past_delivered
             if valid:
+                if cache is not None:
+                    cache['known_past_delivered'] = past_delivered
                 return rows
             logging.warning('WH API%s phân trang không ổn định (%s/%s đơn); chia theo thời gian tạo.', api, len(rows), total)
             if total is not None:
@@ -180,10 +205,40 @@ def build_rows(orders, mapping, day):
     return result
 
 
+def load_wh_cache(path, day):
+    data = read_cache(path)
+    cached_day = data.get('day')
+    past = set(data.get('known_past_delivered', []))
+    if cached_day and cached_day != day.isoformat():
+        past.update(data.get('delivered_today', {}).keys())
+    return {
+        'day': day.isoformat(),
+        'soc_pending': data.get('soc_pending', {}),
+        'known_past_delivered': past,
+        'delivered_today': data.get('delivered_today', {}) if cached_day == day.isoformat() else {},
+    }
+
+
+def save_wh_cache(path, cache):
+    payload = {
+        'day': cache['day'],
+        'soc_pending': cache.get('soc_pending', {}),
+        'known_past_delivered': sorted(cache.get('known_past_delivered', set())),
+        'delivered_today': cache.get('delivered_today', {}),
+    }
+    write_cache(path, payload)
+
+
 def prepare_wh(settings, root=ROOT):
     day = datetime.now(TZ).date()
+    root = Path(root)
+    station = ''.join(c for c in str(getattr(settings, 'station_id', 'default')) if c.isalnum() or c in ('-', '_')) or 'default'
+    cache_path = root / 'data' / f'wh-tracking-{station}.json'
+    cache = load_wh_cache(cache_path, day)
     mapping = load_coverage(settings, cache_dir=root / 'data')
     client = WhClient(settings)
+    client.day = day
+    client.cache = cache
     try:
         merged = {}
         for api in (1, 2):
@@ -192,12 +247,23 @@ def prepare_wh(settings, root=ROOT):
             for row in rows:
                 merged.setdefault(order_id(row), row)
         rows = build_rows(list(merged.values()), mapping, day)
-        with ThreadPoolExecutor(max_workers=min(8, settings.workers)) as pool:
-            stamps = list(pool.map(client.tracking, [r['shipment_id'] for r in rows]))
-        for row, stamp in zip(rows, stamps):
-            row['soc_pending_at'] = stamp
+        soc_cache = cache.setdefault('soc_pending', {})
+        missing_ids = [r['shipment_id'] for r in rows if not soc_cache.get(r['shipment_id'])]
+        if missing_ids:
+            with ThreadPoolExecutor(max_workers=min(8, settings.workers)) as pool:
+                fresh_stamps = list(pool.map(client.tracking, missing_ids))
+            for sid, stamp in zip(missing_ids, fresh_stamps):
+                if stamp:
+                    soc_cache[sid] = stamp
+        for row in rows:
+            row['soc_pending_at'] = soc_cache.get(row['shipment_id'])
         if datetime.now(TZ).date() != day:
             raise RuntimeError('WH: đổi ngày khi đang lấy dữ liệu; chạy lại.')
+        delivered_today = cache.setdefault('delivered_today', {})
+        for r in rows:
+            if r.get('raw_status') == 'Delivered' and r.get('delivered_at'):
+                delivered_today[r['shipment_id']] = r
+        save_wh_cache(cache_path, cache)
         logging.info('WH: %s đơn, %s chưa rõ KV; không lưu payload raw.', len(rows), sum(r['area'] == 'UNRESOLVED' for r in rows))
         return rows, datetime.now(TZ)
     finally:
