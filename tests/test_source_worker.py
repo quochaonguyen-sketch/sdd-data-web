@@ -14,6 +14,7 @@ class SourceTests(unittest.TestCase):
         self.assertLessEqual(len(WORKER_VERSION), 28)
         self.assertIn("pick13", WORKER_VERSION)
         self.assertIn("lh-unseal", WORKER_VERSION)
+        self.assertIn("wh1", WORKER_VERSION)
 
     def test_stop_file_shuts_down_daemon_without_claiming_more_work(self):
         from sdd_data.source_worker import run_worker
@@ -44,8 +45,8 @@ class SourceTests(unittest.TestCase):
                     with RunLock(lock):
                         self.fail('Duplicate worker acquired daemon lock')
 
-    def test_only_ten_sources_and_argv_without_shell(self):
-        self.assertEqual(len(SOURCES), 10)
+    def test_only_eleven_sources_and_argv_without_shell(self):
+        self.assertEqual(len(SOURCES), 11)
         for source in SOURCES:
             command = child_command({'source_id': source, 'id': '123', 'report_date': '2026-10-25'}, 'owner', Path('cancel'))
             self.assertIn(source, command)

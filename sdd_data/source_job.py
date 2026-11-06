@@ -97,6 +97,13 @@ def execute(settings, source, day, boundary, *, root=ROOT):
                     p_rows=night_events, p_started=night_stats['scan_started_at'])
             boundary.control.rpc('record_central_onhold', p_job=boundary.job, p_worker=boundary.worker,
                 p_events=events, p_input=stats['input'], p_excluded=stats['excluded'], p_started=stats['scan_started_at'])
+        elif source == 'wh_tracking':
+            from .wh_tracking import prepare_wh
+            stack.enter_context(RunLock(Path(root) / 'data' / 'wh-tracking-worker.lock'))
+            rows, stamp = prepare_wh(settings, root=root)
+            boundary.begin()
+            boundary.control.rpc('publish_wh_tracking', p_job=boundary.job, p_worker=boundary.worker,
+                p_station=settings.station_id, p_rows=rows, p_at=stamp.isoformat())
         elif source == 'linehaul':
             from .linehaul import prepare_linehaul
             rows, stamp = prepare_linehaul(settings, root=root)

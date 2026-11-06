@@ -18,7 +18,7 @@ from .source_control import Control, SOURCES
 from .session_control import SessionControl
 
 log = logging.getLogger(__name__)
-WORKER_VERSION = "1.5-pick13-lh-unseal"
+WORKER_VERSION = "1.5-pick13-lh-unseal-wh1"
 
 
 @dataclass
