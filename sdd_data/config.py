@@ -44,6 +44,9 @@ class Settings:
     batch_size: int = 200
     coverage_alias_file: Path | None = None
     delivery_workers: int = 48
+    wh_archive_enabled: bool = False
+    wh_archive_url: str = ""
+    wh_archive_key: str = field(default="", repr=False)
 
     @classmethod
     def load(cls, root: Path = ROOT):
@@ -81,4 +84,7 @@ class Settings:
             max(1, min(1000, int(get("WRITE_BATCH_SIZE", "500")))),
             resolve(get("COVERAGE_ALIAS_FILE", "config/mappings/coverage-old-new.csv")),
             max(1, min(48, int(get("DELIVERY_WORKERS", "48")))),
+            get("WH_SUPABASE_ARCHIVE_ENABLED", website_env.get("WH_SUPABASE_ARCHIVE_ENABLED", "")) == "1",
+            get("SUPABASE_ARCHIVE_URL", website_env.get("SUPABASE_ARCHIVE_URL", "")).rstrip("/"),
+            get("SUPABASE_ARCHIVE_KEY", website_env.get("SUPABASE_ARCHIVE_KEY", "")),
         )

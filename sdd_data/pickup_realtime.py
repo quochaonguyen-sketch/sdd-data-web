@@ -95,7 +95,7 @@ class RealtimeClient(PickupRouteClient):
                 if not isinstance(data.get("list"), list):
                     raise RuntimeError("Thiếu trang task SPX.")
                 return data["list"]
-            with (nullcontext(page_pool) if page_pool is not None else ThreadPoolExecutor(max_workers=min(12, self.settings.inventory_workers))) as pool:
+            with (nullcontext(page_pool) if page_pool is not None else ThreadPoolExecutor(max_workers=min(6, self.settings.inventory_workers))) as pool:
                 for items in pool.map(page, range(2, pages + 1)):
                     if time.monotonic() > deadline:
                         raise RuntimeError("Pickup realtime quá 8 phút; giữ snapshot cũ.")

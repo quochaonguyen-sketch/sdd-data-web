@@ -39,12 +39,13 @@ def pending_receive_timestamp(events):
 
 
 class WhClient(SpxClient):
-    def payload(self, api, page=1):
+    def payload(self, api, page=1, active_only=False):
         return {'count': 24, 'high_value': 1, 'page_no': page, 'pickup_station_ids': '5521',
-                **({'current_station_ids': self.settings.station_id, 'order_status': '1,2,5,4'}
+                **({'current_station_ids': self.settings.station_id, 'order_status': '1,2,5' if active_only else '1,2,5,4'}
                    if api == 1 else {'station_ids': self.settings.station_id, 'order_status': '0,7'})}
 
-    def fetch_api(self, api):
+    def fetch_api(self, api, active_only=False):
+        allowed = set(self.payload(api, active_only=active_only)['order_status'].split(','))
         day = getattr(self, 'day', None)
         cache = getattr(self, 'cache', None)
         past_delivered = set(cache.get('known_past_delivered', [])) if cache else set()
@@ -52,7 +53,7 @@ class WhClient(SpxClient):
             rows, seen, total, valid = [], set(), None, True
             hit_past_delivered = False
             for page in range(1, 501):
-                data = self.post(self.payload(api, page))
+                data = self.post(self.payload(api, page, active_only))
                 raw_total = data['total']
                 if isinstance(raw_total, bool) or not str(raw_total).isdigit():
                     raise RuntimeError('WH: tổng SPX không hợp lệ; giữ snapshot cũ.')
@@ -63,7 +64,6 @@ class WhClient(SpxClient):
                     break
                 batch = data['list']
                 ids = [order_id(row) for row in batch]
-                allowed = {'1', '2', '5', '4'} if api == 1 else {'0', '7'}
                 if any(str(row.get('order_status')) not in allowed for row in batch):
                     raise RuntimeError('WH: API trả sai nhóm trạng thái; giữ snapshot cũ.')
                 if not all(ids) or len(ids) != len(set(ids)) or seen.intersection(ids):
@@ -96,18 +96,22 @@ class WhClient(SpxClient):
             if valid:
                 if cache is not None:
                     cache['known_past_delivered'] = past_delivered
+                if hit_past_delivered:
+                    # Older deliveries may appear before active orders on later pages.
+                    active = {order_id(row): row for row in self.fetch_api(1, active_only=True)}
+                    active.update((order_id(row), row) for row in rows if str(row.get('order_status')) == '4')
+                    return list(active.values())
                 return rows
             logging.warning('WH API%s phân trang không ổn định (%s/%s đơn); chia theo thời gian tạo.', api, len(rows), total)
             if total is not None:
-                partitioned = self.fetch_window(api, 0, int(datetime.now(TZ).timestamp()))
+                partitioned = self.fetch_window(api, 0, int(datetime.now(TZ).timestamp()), active_only)
                 ids = [order_id(row) for row in partitioned]
-                allowed = {'1', '2', '5', '4'} if api == 1 else {'0', '7'}
                 if len(ids) == total and all(ids) and len(set(ids)) == total and all(str(r.get('order_status')) in allowed for r in partitioned):
                     return partitioned
         raise RuntimeError('WH: không xác minh được đủ trang/mã đơn; giữ snapshot cũ.')
 
-    def fetch_window(self, api, start, end):
-        payload = {**self.payload(api), 'count': 100, 'create_time': f'{start},{end}'}
+    def fetch_window(self, api, start, end, active_only=False):
+        payload = {**self.payload(api, active_only=active_only), 'count': 100, 'create_time': f'{start},{end}'}
         data = self.post(payload)
         total, rows = int(data['total']), list(data['list'])
         if total < 0 or len(rows) > total:
@@ -117,7 +121,7 @@ class WhClient(SpxClient):
         if total > len(rows):
             if start < end:
                 middle = (start + end) // 2
-                return self.fetch_window(api, start, middle) + self.fetch_window(api, middle + 1, end)
+                return self.fetch_window(api, start, middle, active_only) + self.fetch_window(api, middle + 1, end, active_only)
             if total > 10000 or not rows:
                 raise RuntimeError('WH: một giây vượt giới hạn phân trang.')
             size = len(rows)

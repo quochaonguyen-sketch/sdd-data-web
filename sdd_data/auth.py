@@ -18,7 +18,23 @@ log = logging.getLogger(__name__)
 _lock = threading.Lock()
 
 
+def is_rate_limited(response):
+    if response.status_code == 429:
+        return True
+    try:
+        body = response.json()
+        if isinstance(body, dict) and body.get("is_login") is True:
+            code = body.get("retcode", body.get("error"))
+            if code in (90309999, "90309999", 429, "429") or response.status_code == 403 or bool(body.get("redirect_to_error_page")):
+                return True
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return False
+
+
 def auth_failure(response):
+    if is_rate_limited(response):
+        return False
     if response.status_code in (401, 403) or 300 <= response.status_code < 400:
         return True
     if response.status_code != 200:
@@ -248,14 +264,27 @@ class SpxSession(requests.Session):
         self.cookies.clear()
         self.cookies.update(cookies)
         self.headers["x-csrftoken"] = cookies.get("csrftoken", "")
-        response = super().request(method, url, **kwargs)
-        if auth_failure(response):
-            response.close()
-            cookies = self.manager.refresh(rejected=rejected)
-            self.cookies.clear()
-            self.cookies.update(cookies)
-            self.headers["x-csrftoken"] = cookies.get("csrftoken", "")
+        for retry in range(4):
             response = super().request(method, url, **kwargs)
+            if is_rate_limited(response):
+                if retry < 3:
+                    response.close()
+                    time.sleep(1.0 + retry * 0.5)
+                    continue
             if auth_failure(response):
-                self.manager.note_rejected()
+                response.close()
+                try:
+                    cookies = self.manager.refresh(rejected=rejected)
+                except Exception:
+                    if retry < 3:
+                        time.sleep(1.0)
+                        continue
+                    raise
+                self.cookies.clear()
+                self.cookies.update(cookies)
+                self.headers["x-csrftoken"] = cookies.get("csrftoken", "")
+                response = super().request(method, url, **kwargs)
+                if auth_failure(response):
+                    self.manager.note_rejected()
+            return response
         return response

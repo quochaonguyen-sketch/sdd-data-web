@@ -207,12 +207,20 @@ class SpxClient:
                     raise RuntimeError("Không kết nối được SPX sau 3 lần thử.") from None
                 clock.sleep(2 ** attempt)
                 continue
-            if response.status_code in (401, 403) or 300 <= response.status_code < 400:
-                raise AuthenticationError("SPX từ chối phiên đăng nhập. Bấm Đăng nhập SPX trong SDD Web Data.")
             if response.status_code == 429 or response.status_code >= 500:
                 if attempt < 2:
                     clock.sleep(2 ** attempt)
                     continue
+            if response.status_code in (401, 403) or 300 <= response.status_code < 400:
+                try:
+                    b = response.json()
+                    if isinstance(b, dict) and b.get("is_login") is True:
+                        if attempt < 2:
+                            clock.sleep(1.0 + attempt)
+                            continue
+                except Exception:
+                    pass
+                raise AuthenticationError("SPX từ chối phiên đăng nhập. Bấm Đăng nhập SPX trong SDD Web Data.")
             if response.status_code != 200:
                 raise RuntimeError(f"SPX trả HTTP {response.status_code}; không coi là dữ liệu rỗng.")
             try:
@@ -222,8 +230,13 @@ class SpxClient:
             if not isinstance(body, dict):
                 raise RuntimeError("SPX trả cấu trúc dữ liệu không hợp lệ.")
             code = body.get("retcode", body.get("error", 0))
-            if body.get("is_login") is False or code in (401, 403, 90309999, "401", "403", "90309999"):
+            if body.get("is_login") is False or code in (401, 403, "401", "403"):
                 raise AuthenticationError("Phiên SPX hết hạn hoặc không có quyền đọc báo cáo.")
+            if code in (90309999, "90309999"):
+                if attempt < 2:
+                    clock.sleep(1.0 + attempt)
+                    continue
+                raise RuntimeError("SPX giới hạn tần suất yêu cầu (rate limit 90309999); thử lại sau.")
             if code not in (None, 0, "0") or body.get("redirect_to_error_page"):
                 raise RuntimeError("SPX báo lỗi ứng dụng; dừng để tránh ghi báo cáo thiếu.")
             data = body.get("data")

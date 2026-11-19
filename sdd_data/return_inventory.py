@@ -64,7 +64,7 @@ class ReturnClient(SpxClient):
                     raise SourceChanged('Tổng hàng trả đổi trong lúc đọc.')
                 return data['list']
             rows = list(first['list'])
-            with ThreadPoolExecutor(max_workers=min(12, self.settings.workers)) as pool:
+            with ThreadPoolExecutor(max_workers=min(6, self.settings.workers)) as pool:
                 for batch in pool.map(page, range(2, (expected + page_size - 1) // page_size + 1)):
                     rows.extend(batch)
         else:
@@ -141,7 +141,7 @@ def return_points(settings, rows, client, root, saved_points=None):
         pending.write_text(json.dumps({'station_id': settings.station_id, 'points': cache}), encoding='utf-8')
         pending.replace(cache_path)
     try:
-        with ThreadPoolExecutor(max_workers=min(12, settings.workers)) as pool:
+        with ThreadPoolExecutor(max_workers=min(6, settings.workers)) as pool:
             for done, (sid, point) in enumerate(pool.map(resolve, missing), 1):
                 if point:
                     cache[sid] = point

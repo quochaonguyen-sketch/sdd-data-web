@@ -97,7 +97,53 @@ class WhTests(unittest.TestCase):
                 execute(settings, 'wh_tracking', '2026-11-06', boundary, root=Path(folder))
             self.assertEqual(boundary.control.rpc.call_args.args[0], 'publish_wh_tracking')
 
-    def test_fetch_api_stops_at_past_delivered_boundary(self):
+    def test_archive_route_publishes_after_the_queue_grants_the_job(self):
+        settings = Mock(wh_archive_enabled=True)
+        boundary = Mock(job="test-job")
+        stamp = datetime.now(TZ)
+        rows = [{"shipment_id": "HV001"}]
+        with tempfile.TemporaryDirectory() as folder, \
+                patch("sdd_data.wh_tracking.prepare_wh", return_value=(rows, stamp)), \
+                patch("sdd_data.wh_archive.publish_wh_archive") as publish:
+            publish.side_effect = lambda *args: boundary.begin.assert_called_once_with()
+            execute(settings, "wh_tracking", stamp.date().isoformat(), boundary, root=Path(folder))
+            publish.assert_called_once_with(settings, boundary.job, stamp.date().isoformat(), rows, stamp)
+        boundary.control.rpc.assert_not_called()
+
+    def test_archive_publish_keeps_a_newer_snapshot(self):
+        from sdd_data.wh_archive import publish_wh_archive
+
+        stamp = datetime.now(TZ)
+        settings = Mock(station_id="4232", supabase_url="https://primarytest.supabase.co",
+                        wh_archive_url="https://archivetest.supabase.co", wh_archive_key="test-key")
+        with patch("sdd_data.wh_archive.requests.Session") as session_factory:
+            session = session_factory.return_value.__enter__.return_value
+            session.request.return_value.json.return_value = [
+                {"version": "wh-full:current", "snapshot_at": stamp.isoformat()}
+            ]
+            publish_wh_archive(settings, "test-job", stamp.date().isoformat(), [], stamp)
+            session.request.assert_called_once()
+            self.assertEqual(session.request.call_args.args[0], "GET")
+            self.assertTrue(session.request.call_args.args[1].startswith(settings.wh_archive_url))
+
+    def test_archive_publish_writes_a_complete_snapshot(self):
+        from sdd_data.wh_archive import publish_wh_archive
+
+        stamp = datetime.now(TZ)
+        settings = Mock(station_id="4232", supabase_url="https://primarytest.supabase.co",
+                        wh_archive_url="https://archivetest.supabase.co", wh_archive_key="test-key")
+        orders = [{"shipment_id": "HV001", "raw_status": "Onhold", "attempt": 1}]
+        with patch("sdd_data.wh_archive.requests.Session") as session_factory:
+            session = session_factory.return_value.__enter__.return_value
+            read_response, write_response = Mock(), Mock()
+            read_response.json.return_value = []
+            write_response.json.return_value = [{"version": f"wh-full:test-job:{stamp.isoformat()}"}]
+            session.request.side_effect = [read_response, write_response]
+            publish_wh_archive(settings, "test-job", stamp.date().isoformat(), orders, stamp)
+            self.assertEqual(session.request.call_args.args[0], "POST")
+            self.assertEqual(session.request.call_args.kwargs["json"]["payload"]["orders"], orders)
+
+    def test_fetch_api_checks_active_orders_after_past_delivered_boundary(self):
         day = date(2026, 11, 6)
         today_ts = int(datetime(2026, 11, 6, 12, 0, tzinfo=TZ).timestamp())
         yesterday_ts = int(datetime(2026, 11, 5, 15, 0, tzinfo=TZ).timestamp())
@@ -107,19 +153,22 @@ class WhTests(unittest.TestCase):
             order('TODAY_DELIV', status=4, delivered_time=today_ts),
             order('YESTERDAY_DELIV', status=4, delivered_time=yesterday_ts),
         ]
-        p2 = [order('OLD2', status=4, delivered_time=yesterday_ts)]
-        client = self.client([{'list': p1, 'total': 1000}, {'list': p2, 'total': 1000}])
+        client = self.client([
+            {'list': p1, 'total': 1000},
+            {'list': [p1[0], order('ACTIVE_OLDER')], 'total': 2},
+        ])
         client.day = day
         client.cache = {'day': day.isoformat(), 'known_past_delivered': set()}
 
         rows = client.fetch_api(1)
-        self.assertEqual(len(rows), 2)
-        self.assertEqual([r['shipment_id'] for r in rows], ['ACTIVE', 'TODAY_DELIV'])
-        self.assertEqual(client.post.call_count, 1)
+        self.assertEqual([r['shipment_id'] for r in rows], ['ACTIVE', 'ACTIVE_OLDER', 'TODAY_DELIV'])
+        self.assertEqual([c.args[0]['order_status'] for c in client.post.call_args_list], ['1,2,5,4', '1,2,5'])
+        self.assertEqual([c.args[0]['page_no'] for c in client.post.call_args_list], [1, 1])
         self.assertIn('YESTERDAY_DELIV', client.cache['known_past_delivered'])
 
     def test_prepare_wh_caches_soc_pending_and_skips_refetch(self):
-        with tempfile.TemporaryDirectory() as folder:
+        with tempfile.TemporaryDirectory() as folder, patch("sdd_data.wh_tracking.datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime(2026, 11, 6, 12, 30, tzinfo=TZ)
             today_ts = int(datetime(2026, 11, 6, 12, 0, tzinfo=TZ).timestamp())
             ord1 = order('ORD1', status=4, delivered_time=today_ts)
             client = Mock()

@@ -19,7 +19,8 @@ FIELDS = {"shipment_id", "create_time", "current_station_received_time", "order_
           "zone_id", "receiver_zone_id", "buyer_zone_id", "pickup_station_name",
           "driver_id", "rider_id", "driverId", "driver_name", "rider_name", "driverName",
           "receiver_ward_name", "buyer_ward_name", "receiver_district_name", "buyer_district_name",
-          "lowest_buyer_address_id", "lowest_buyer_address_name", "ward_name", "district_name"}
+          "lowest_buyer_address_id", "lowest_buyer_address_name", "ward_name", "district_name",
+          "ctime", "createTime", "receive_time", "received_time"}
 
 
 class InventoryClient(SpxClient):
@@ -157,8 +158,8 @@ def build_inventory(orders, mapping, areas, ward_catalog=None):
         if assigned:
             stats["assigned_skipped"] += 1
             continue
-        received = as_datetime(order.get("current_station_received_time"))
-        created = as_datetime(order.get("create_time"))
+        received = as_datetime(order.get("current_station_received_time") or order.get("receive_time") or order.get("received_time"))
+        created = as_datetime(order.get("create_time") or order.get("ctime") or order.get("createTime"))
         if not received or not created:
             raise ValueError("Tồn Delivery thiếu thời gian tạo/nhận hợp lệ; chưa ghi web.")
         zone = next((str(order[key]).strip() for key in ("zone_id", "receiver_zone_id", "buyer_zone_id") if order.get(key)), "")
@@ -280,7 +281,7 @@ def prepare_inventory(settings, *, lookback_days=14, root, stop_event=None, mapp
         coverage_future = io_pool.submit(load_coverage, settings, mapping_csv, cache_dir=Path(root) / 'data')
         ward_future = io_pool.submit(load_seller_wards, settings) if orders is None else None
         if orders is None:
-            client = InventoryClient(replace(settings, inventory_workers=settings.delivery_workers), stop_event)
+            client = InventoryClient(replace(settings, inventory_workers=min(8, settings.delivery_workers)), stop_event)
             try:
                 orders = client.fetch_inventory(lookback_days, cache_path=Path(root)/"data"/"delivery-window-plan.json")
                 source_complete = getattr(client, "source_complete", False) is True

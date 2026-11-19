@@ -58,7 +58,7 @@ def group_routes(groups):
 class PickupRouteClient(SpxClient):
     def __init__(self, settings):
         super().__init__(settings)
-        self._request_slots = threading.BoundedSemaphore(max(1, min(12, settings.inventory_workers)))
+        self._request_slots = threading.BoundedSemaphore(max(1, min(6, settings.inventory_workers)))
         self._request_lock = threading.Lock()
         self.request_count = 0
         self.request_counts = Counter()
@@ -79,12 +79,20 @@ class PickupRouteClient(SpxClient):
                     raise RuntimeError("Không đọc được pickup point sau 3 lần thử; chưa đồng bộ.") from None
                 time.sleep(2 ** attempt)
                 continue
-            if response.status_code in (401, 403) or 300 <= response.status_code < 400:
-                raise AuthenticationError("SPX từ chối phiên đọc pickup point. Bấm Đăng nhập SPX trong SDD Web Data.")
             if response.status_code == 429 or response.status_code >= 500:
                 if attempt < 2:
                     time.sleep(2 ** attempt)
                     continue
+            if response.status_code in (401, 403) or 300 <= response.status_code < 400:
+                try:
+                    b = response.json()
+                    if isinstance(b, dict) and b.get("is_login") is True:
+                        if attempt < 2:
+                            time.sleep(1.0 + attempt)
+                            continue
+                except Exception:
+                    pass
+                raise AuthenticationError("SPX từ chối phiên đọc pickup point. Bấm Đăng nhập SPX trong SDD Web Data.")
             if response.status_code != 200:
                 raise RuntimeError(f"Pickup point: HTTP {response.status_code}; chưa đồng bộ.")
             try:
@@ -94,8 +102,13 @@ class PickupRouteClient(SpxClient):
             if not isinstance(body, dict):
                 raise RuntimeError("Pickup point trả JSON không hợp lệ.")
             code = body.get("retcode", body.get("error", 0))
-            if body.get("is_login") is False or code in (401, 403, 90309999, "401", "403", "90309999"):
+            if body.get("is_login") is False or code in (401, 403, "401", "403"):
                 raise AuthenticationError("Phiên đọc pickup point hết hạn.")
+            if code in (90309999, "90309999"):
+                if attempt < 2:
+                    time.sleep(1.0 + attempt)
+                    continue
+                raise RuntimeError("SPX giới hạn tần suất đọc pickup point (rate limit 90309999); thử lại sau.")
             if code not in (None, 0, "0") or not isinstance(body.get("data"), dict):
                 raise RuntimeError(f"SPX báo lỗi pickup point (mã {code}); chưa đồng bộ.")
             return body["data"]

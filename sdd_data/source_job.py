@@ -102,8 +102,12 @@ def execute(settings, source, day, boundary, *, root=ROOT):
             stack.enter_context(RunLock(Path(root) / 'data' / 'wh-tracking-worker.lock'))
             rows, stamp = prepare_wh(settings, root=root)
             boundary.begin()
-            boundary.control.rpc('publish_wh_tracking', p_job=boundary.job, p_worker=boundary.worker,
-                p_station=settings.station_id, p_rows=rows, p_at=stamp.isoformat())
+            if settings.wh_archive_enabled is True:
+                from .wh_archive import publish_wh_archive
+                publish_wh_archive(settings, boundary.job, day, rows, stamp)
+            else:
+                boundary.control.rpc('publish_wh_tracking', p_job=boundary.job, p_worker=boundary.worker,
+                    p_station=settings.station_id, p_rows=rows, p_at=stamp.isoformat())
         elif source == 'linehaul':
             from .linehaul import prepare_linehaul
             rows, stamp = prepare_linehaul(settings, root=root)

@@ -12,8 +12,8 @@ def fetch_live_windows(client, path, date_field, start, end, filters=None,
         windows = initial_windows
     observed, rows = [], []
     # Page executors are shared across windows instead of reconnecting for each one.
-    workers = max(1, min(8, client.settings.inventory_workers))
-    interval_workers = max(1, min(12, client.settings.inventory_workers))
+    workers = max(1, min(4, client.settings.inventory_workers))
+    interval_workers = max(1, min(6, client.settings.inventory_workers))
     with ThreadPoolExecutor(max_workers=workers) as pages, ThreadPoolExecutor(max_workers=interval_workers) as intervals:
         def read(bounds):
             check = getattr(client, "check_deadline", None)

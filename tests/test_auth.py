@@ -30,6 +30,17 @@ class AuthTests(unittest.TestCase):
         self.assertFalse(auth_failure(Mock(status_code=500)))
         self.assertTrue(auth_failure(Mock(status_code=200,json=lambda:{'retcode':90309999})))
 
+    def test_rate_limit_with_valid_login_is_not_treated_as_auth_failure(self):
+        throttled = Mock(status_code=403, json=lambda: {"is_login": True, "error": 90309999, "redirect_to_error_page": True})
+        self.assertFalse(auth_failure(throttled))
+        manager = Mock()
+        manager.cookies.return_value = {'fms_user_skey': 'test', 'csrftoken': 'csrf'}
+        success = Mock(status_code=200, json=lambda: {'retcode': 0, 'data': {}})
+        with SpxSession(manager) as session, patch('requests.Session.request', side_effect=[throttled, success]) as request, patch('time.sleep'):
+            self.assertIs(session.get('https://spx.shopee.vn/api/test'), success)
+            self.assertEqual(request.call_count, 2)
+            manager.refresh.assert_not_called()
+
     def test_api_refreshes_once_and_reloads_csrf(self):
         manager=Mock()
         manager.cookies.return_value={'fms_user_skey':'old-test','csrftoken':'old-csrf'}
