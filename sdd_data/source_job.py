@@ -7,6 +7,8 @@ import logging
 from pathlib import Path
 import sys
 import threading
+import time
+from urllib.parse import urlsplit
 from uuid import UUID
 from unittest.mock import patch
 import requests
@@ -14,6 +16,7 @@ import requests
 from .config import ROOT, Settings
 from .source_control import Control, SOURCES
 from .runner import RunLock, configure_logging
+from .retry import RETRY_EXIT, ROLLED_BACK_EXIT, SourceBusy, retry_reason
 from .transform import TZ
 
 
@@ -47,8 +50,13 @@ def execute(settings, source, day, boundary, *, root=ROOT):
 
     def guarded_send(session, *args, **kwargs):
         request = args[0] if args else kwargs.get('request')
-        if not getattr(request, 'url', '').startswith(boundary.control.url + 'rpc/'):
+        url = getattr(request, 'url', '')
+        if not url.startswith(boundary.control.url + 'rpc/'):
             boundary.check()
+        if urlsplit(url).hostname == 'spx.shopee.vn':
+            timeout = kwargs.get('timeout')
+            read = timeout[1] if isinstance(timeout, tuple) else timeout
+            kwargs['timeout'] = (10, max(90, min(120, read or 90)))
         return original_send(session, *args, **kwargs)
 
     with ExitStack() as stack:
@@ -57,7 +65,7 @@ def execute(settings, source, day, boundary, *, root=ROOT):
             stack.enter_context(RunLock(Path(root) / 'data' / f'{source.replace("_", "-")}-worker.lock'))
             legacy = boundary.control.rpc('begin_data_source_inventory', p_job=boundary.job, p_worker=boundary.worker)
             if not legacy:
-                raise RuntimeError('Nguồn tồn đang được worker khác chạy; đợi hoàn tất rồi chạy lại.')
+                raise SourceBusy('Nguồn tồn đang được worker khác chạy; đợi hoàn tất rồi chạy lại.')
             if source == 'pickup_inventory':
                 from .pickup_inventory import prepare_pickup_inventory
                 rows, stats = prepare_pickup_inventory(settings, root=root)
@@ -167,46 +175,68 @@ def main():
     parser.add_argument('--source', required=True, choices=sorted(SOURCES))
     parser.add_argument('--day', required=True)
     parser.add_argument('--cancel-file', required=True, type=Path)
+    parser.add_argument('--attempt', type=int)
     args = parser.parse_args()
     datetime.strptime(args.day, '%Y-%m-%d')
     configure_logging()
     configured = Settings.load()
-    settings = replace(configured, workers=min(32, configured.workers), inventory_workers=min(24, configured.inventory_workers))
+    settings = replace(configured, workers=min(8, configured.workers), inventory_workers=min(6, configured.inventory_workers))
     control = Control(settings)
     lease_control = Control(settings)
     lease_stop = threading.Event()
 
     def heartbeat():
+        last_renewal = time.monotonic()
         while not lease_stop.wait(10):
             try:
                 pulse = lease_control.rpc('pulse_data_source_job', p_job=args.job, p_worker=args.worker)
                 if not pulse or pulse.get('status') == 'CANCEL_REQUESTED':
                     args.cancel_file.touch(exist_ok=True)
+                    return
+                last_renewal = time.monotonic()
             except Exception:
-                # Stop further fetches on lost connectivity. An in-flight publication is drained.
-                args.cancel_file.touch(exist_ok=True)
+                # A brief failure can recover while this attempt still owns its lease.
+                if time.monotonic() - last_renewal >= 45:
+                    with args.cancel_file.open('a', encoding='ascii') as marker:
+                        if marker.tell() == 0:
+                            marker.write('lease')
+                    return
 
     lease_thread = threading.Thread(target=heartbeat, daemon=True)
     lease_thread.start()
     status, code = 'FAILED', 1
+    reason = None
+    boundary = Boundary(control, args.job, args.worker, args.cancel_file)
     try:
         pulse = control.rpc('pulse_data_source_job', p_job=args.job, p_worker=args.worker)
         if not pulse or pulse.get('status') == 'CANCEL_REQUESTED':
             raise Cancelled()
-        execute(settings, args.source, args.day, Boundary(control, args.job, args.worker, args.cancel_file))
+        execute(settings, args.source, args.day, boundary)
         status, code = 'SUCCEEDED', 0
     except Cancelled:
-        logging.info('Cancelled before publication')
-        status, code = 'CANCELLED', 2
-    except Exception:
+        marker = args.cancel_file.read_text(encoding='ascii') if args.cancel_file.exists() else ''
+        if marker in ('timeout', 'lease'):
+            status, code, reason = 'RETRY', RETRY_EXIT, marker
+        else:
+            logging.info('Cancelled before publication')
+            status, code = 'CANCELLED', 2
+    except Exception as error:
+        reason = retry_reason(error, publishing=boundary.publishing)
+        if reason:
+            status, code = 'RETRY', ROLLED_BACK_EXIT if reason == 'rolled_back' else RETRY_EXIT
         logging.exception('Source failed')
     finally:
         # The child acknowledges its own outcome too, so a daemon restart cannot lose a completed job.
         try:
-            control.rpc('finish_data_source_job', p_job=args.job, p_worker=args.worker, p_status=status)
+            if args.attempt is None:
+                # A daemon started before the migration still invokes the older CLI.
+                control.rpc('finish_data_source_job', p_job=args.job, p_worker=args.worker,
+                            p_status='FAILED' if status == 'RETRY' else status)
+            else:
+                control.rpc('complete_data_source_attempt', p_job=args.job, p_worker=args.worker,
+                            p_attempt=args.attempt, p_outcome=status, p_reason=reason)
         except Exception:
             logging.exception('Could not acknowledge source result; parent will retry acknowledgement')
-            code = 1
         lease_stop.set()
         lease_thread.join(timeout=25)
         lease_control.close()

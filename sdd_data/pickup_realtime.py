@@ -134,14 +134,18 @@ class RealtimeClient(PickupRouteClient):
         return tasks
 
     def pending_orders(self, now):
-        rows = []
-        for status in (0, 2):
+        def read(status):
             cache_dir = getattr(self, "cache_dir", None)
             station = getattr(self.settings, "station_id", "")
             filename = (f"pickup-inventory-windows-{station}.json" if status == 2 else f"pickup-created-windows-{station}.json")
-            rows.extend(fetch_live_windows(self, "fm_hub/pickup_order/search", "ctime", 0, int(now.timestamp()),
+            return fetch_live_windows(self, "fm_hub/pickup_order/search", "ctime", 0, int(now.timestamp()),
                 {"status": status, "fetch_total": 1, "fetch_list": 1}, ("pickup_order_id",),
-                cache_path=cache_dir / filename if cache_dir else None, namespace=station))
+                cache_path=cache_dir / filename if cache_dir else None, namespace=station)
+        # Both statuses share the client's HTTP semaphore, so fan-out stays bounded.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            rows = [row for batch in pool.map(read, (0, 2)) for row in batch]
+        # Preserve status precedence (0, then 2). build_realtime already counts
+        # each (rider, shipment) once when SPX returns an order in both statuses.
         return rows
 
 

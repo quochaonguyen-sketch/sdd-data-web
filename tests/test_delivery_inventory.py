@@ -127,7 +127,7 @@ class InventoryTransformTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/"plan.json"
             save_inventory_windows(path,"station",[(0,9,0),(10,19,0),(20,29,300),(30,39,200)])
-            self.assertEqual(inventory_windows(path,"station",5,45),[(5,19),(20,29),(30,39),(40,45)])
+            self.assertEqual(inventory_windows(path,"station",5,45),[(5,29),(30,39),(40,45)])
             self.assertEqual(inventory_windows(path,"other-station",5,45),[(5,45)])
             path.write_text('{"namespace":"station","windows":[[0,10],[12,20]]}')
             self.assertEqual(inventory_windows(path,"station",5,45),[(5,45)])

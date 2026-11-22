@@ -60,12 +60,11 @@ def cached_windows(path, station, end, start=0):
 
 
 def save_windows(path, station, windows):
-    # Empty adjacent historical windows can share a single fresh probe next run.
+    # Pack adjacent sparse/empty intervals into one live page, retaining all history.
     merged = []
     for left, right, total in windows:
         if (merged and merged[-1][1] + 1 == left and
-                ((not total and not merged[-1][2]) or
-                 (total > 0 and merged[-1][2] > 0 and total + merged[-1][2] <= PICKUP_PAGE_SIZE))):
+                total + merged[-1][2] <= PICKUP_PAGE_SIZE):
             merged[-1][1] = right
             merged[-1][2] += total
         else:

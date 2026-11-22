@@ -65,6 +65,7 @@ class PickupRouteClient(SpxClient):
 
     def get(self, path, params):
         import requests
+        from .retry import RETRYABLE_HTTP, wait_before_retry
         for attempt in range(3):
             try:
                 with getattr(self, "_request_slots", None) or nullcontext():
@@ -77,11 +78,11 @@ class PickupRouteClient(SpxClient):
             except requests.RequestException:
                 if attempt == 2:
                     raise RuntimeError("Không đọc được pickup point sau 3 lần thử; chưa đồng bộ.") from None
-                time.sleep(2 ** attempt)
+                wait_before_retry(attempt)
                 continue
-            if response.status_code == 429 or response.status_code >= 500:
+            if response.status_code in RETRYABLE_HTTP:
                 if attempt < 2:
-                    time.sleep(2 ** attempt)
+                    wait_before_retry(attempt, response)
                     continue
             if response.status_code in (401, 403) or 300 <= response.status_code < 400:
                 try:
@@ -106,7 +107,7 @@ class PickupRouteClient(SpxClient):
                 raise AuthenticationError("Phiên đọc pickup point hết hạn.")
             if code in (90309999, "90309999"):
                 if attempt < 2:
-                    time.sleep(1.0 + attempt)
+                    wait_before_retry(attempt, response)
                     continue
                 raise RuntimeError("SPX giới hạn tần suất đọc pickup point (rate limit 90309999); thử lại sau.")
             if code not in (None, 0, "0") or not isinstance(body.get("data"), dict):

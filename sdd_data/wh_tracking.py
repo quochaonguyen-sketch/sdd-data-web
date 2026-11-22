@@ -136,18 +136,19 @@ class WhClient(SpxClient):
         return rows
 
     def tracking(self, sid):
+        from .retry import RETRYABLE_HTTP, wait_before_retry
         for attempt in range(3):
             try:
                 response = self.session().get(TRACKING_INFO, params={'shipment_id': sid}, timeout=30, allow_redirects=False)
             except requests.RequestException:
                 if attempt == 2:
                     raise RuntimeError('WH: không đọc được lịch sử tracking.') from None
-                time.sleep(2 ** attempt)
+                wait_before_retry(attempt)
                 continue
             if response.status_code in (401, 403) or 300 <= response.status_code < 400:
                 raise AuthenticationError('WH: phiên SPX không hợp lệ.')
-            if (response.status_code == 429 or response.status_code >= 500) and attempt < 2:
-                time.sleep(2 ** attempt)
+            if response.status_code in RETRYABLE_HTTP and attempt < 2:
+                wait_before_retry(attempt, response)
                 continue
             if response.status_code != 200:
                 raise RuntimeError(f'WH tracking: HTTP {response.status_code}; giữ snapshot cũ.')
@@ -157,7 +158,12 @@ class WhClient(SpxClient):
                 raise RuntimeError('WH tracking không trả JSON hợp lệ.') from None
             if not isinstance(body, dict):
                 raise RuntimeError('WH tracking sai cấu trúc.')
-            if body.get('retcode') in (401, 403, 90309999, '401', '403', '90309999') or body.get('is_login') is False:
+            if str(body.get('retcode')) == '90309999':
+                if attempt < 2:
+                    wait_before_retry(attempt, response)
+                    continue
+                raise RuntimeError('WH tracking: SPX giới hạn tần suất (90309999).')
+            if body.get('retcode') in (401, 403, '401', '403') or body.get('is_login') is False:
                 raise AuthenticationError('WH: phiên SPX hết hạn.')
             data = body.get('data')
             if body.get('retcode') not in (0, '0') or not isinstance(data, dict) or not isinstance(data.get('tracking_list'), list):

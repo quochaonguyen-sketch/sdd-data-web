@@ -14,11 +14,12 @@ from uuid import uuid4
 
 from .config import ROOT, Settings
 from .runner import RunLock, configure_logging
+from .retry import RETRY_EXIT, ROLLED_BACK_EXIT
 from .source_control import Control, SOURCES
 from .session_control import SessionControl
 
 log = logging.getLogger(__name__)
-WORKER_VERSION = "1.5-pick13-lh-unseal-wh1"
+WORKER_VERSION = "1.6-pick13-lh-unseal-wh1-r1"
 
 
 @dataclass
@@ -27,8 +28,9 @@ class Child:
     output: object
     cancel: Path
     started: float
+    attempt: int = 0
     stop_at: float = 0
-    finish_status: str | None = None
+    timed_out: bool = False
 
 
 def child_command(job, worker, cancel):
@@ -36,7 +38,22 @@ def child_command(job, worker, cancel):
         raise ValueError('Source not allowed')
     return [sys.executable, '-u', '-m', 'sdd_data.source_job', '--job', job['id'],
             '--worker', worker, '--source', job['source_id'], '--day', job['report_date'],
+            '--attempt', str(job.get('retry_count', 0)),
             '--cancel-file', str(cancel)]
+
+
+def acknowledge(control, job_id, worker, child, code):
+    reason = None
+    if code == 0:
+        outcome = 'SUCCEEDED'
+    elif code == ROLLED_BACK_EXIT:
+        outcome, reason = 'RETRY', 'rolled_back'
+    elif code == RETRY_EXIT or child.timed_out:
+        outcome, reason = 'RETRY', 'timeout' if child.timed_out else 'lease'
+    else:
+        outcome = 'CANCELLED' if code == 2 or child.stop_at else 'FAILED'
+    control.rpc('complete_data_source_attempt', p_job=job_id, p_worker=worker,
+                p_attempt=child.attempt, p_outcome=outcome, p_reason=reason)
 
 
 def stop_child(child):
@@ -64,7 +81,7 @@ def bridge_legacy(control):
                         p_day=datetime.now(TZ).date().isoformat(), p_actor=job.get('requested_by'))
 
 
-def run_worker(settings, *, stop_event=None, concurrency=4, root=ROOT, job_timeout=1800):
+def run_worker(settings, *, stop_event=None, concurrency=2, root=ROOT, job_timeout=2700):
     if not 1 <= concurrency <= 4:
         raise ValueError('Concurrency 1..4')
     stop = stop_event or threading.Event()
@@ -96,6 +113,13 @@ def run_worker(settings, *, stop_event=None, concurrency=4, root=ROOT, job_timeo
                         # Cookie control-plane rollout must not cancel data-source jobs.
                         log.warning('SPX session status unavailable; check session-control SQL configuration.')
                     for job_id, child in list(children.items()):
+                        code = child.process.poll()
+                        if code is not None:
+                            acknowledge(control, job_id, worker, child, code)
+                            child.output.close()
+                            child.cancel.unlink(missing_ok=True)
+                            del children[job_id]
+                            continue
                         pulse = control.rpc('pulse_data_source_job', p_job=job_id, p_worker=worker)
                         if not pulse:
                             # Ownership was lost: do not start new work; stop reads immediately.
@@ -103,18 +127,15 @@ def run_worker(settings, *, stop_event=None, concurrency=4, root=ROOT, job_timeo
                             child.stop_at = child.stop_at or time.monotonic()
                         publishing = bool(pulse and pulse.get('phase') == 'publishing')
                         cancelled = bool(pulse and pulse.get('status') == 'CANCEL_REQUESTED')
-                        if stop.is_set() or cancelled or time.monotonic() - child.started > job_timeout:
+                        if stop.is_set() or cancelled:
                             child.cancel.touch(exist_ok=True)
                             child.stop_at = child.stop_at or time.monotonic()
+                        elif not publishing and not child.stop_at and time.monotonic() - child.started > job_timeout:
+                            child.timed_out = True
+                            child.cancel.write_text('timeout', encoding='ascii')
+                            child.stop_at = time.monotonic()
                         if child.stop_at and not publishing and time.monotonic() - child.stop_at > 90:
                             stop_child(child)
-                        code = child.process.poll()
-                        if code is not None:
-                            child.finish_status = child.finish_status or ('SUCCEEDED' if code == 0 else 'CANCELLED' if code == 2 or child.stop_at else 'FAILED')
-                            control.rpc('finish_data_source_job', p_job=job_id, p_worker=worker, p_status=child.finish_status)
-                            child.output.close()
-                            child.cancel.unlink(missing_ok=True)
-                            del children[job_id]
                     if not stop.is_set():
                         control.rpc('finalize_onhold_days')
                         control.rpc('enqueue_due_data_sources')
@@ -122,6 +143,11 @@ def run_worker(settings, *, stop_event=None, concurrency=4, root=ROOT, job_timeo
                         while len(children) < concurrency:
                             job = control.rpc('claim_data_source_job', p_worker=worker)
                             if not job:
+                                break
+                            attempt = job.get('retry_count', 0)
+                            if job['id'] in children:
+                                control.rpc('complete_data_source_attempt', p_job=job['id'], p_worker=worker,
+                                            p_attempt=attempt, p_outcome='RETRY', p_reason='busy')
                                 break
                             cancel = work / f'{job["id"]}.cancel'
                             cancel.unlink(missing_ok=True)
@@ -131,15 +157,14 @@ def run_worker(settings, *, stop_event=None, concurrency=4, root=ROOT, job_timeo
                                     stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
                                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
                                     start_new_session=os.name != 'nt', env={**os.environ, 'PYTHONIOENCODING': 'utf-8'})
-                                children[job['id']] = Child(process, output, cancel, time.monotonic())
+                                children[job['id']] = Child(process, output, cancel, time.monotonic(), attempt)
                             except Exception:
                                 output.close()
-                                control.rpc('finish_data_source_job', p_job=job['id'], p_worker=worker, p_status='FAILED')
+                                control.rpc('complete_data_source_attempt', p_job=job['id'], p_worker=worker,
+                                            p_attempt=attempt, p_outcome='FAILED')
                                 raise
                 except Exception:
-                    log.exception('Control connection failed; running children will stop before publication')
-                    for child in children.values():
-                        child.cancel.touch(exist_ok=True)
+                    log.exception('Control connection failed; child processes retain independent lease checks')
                 # Use an event wait so shutdown remains responsive; continue heartbeats while draining.
                 if stop.is_set():
                     time.sleep(3)
@@ -155,7 +180,7 @@ def run_worker(settings, *, stop_event=None, concurrency=4, root=ROOT, job_timeo
 
 def main():
     parser = argparse.ArgumentParser(description='SDD central source worker')
-    parser.add_argument('--concurrency', type=int, choices=range(1, 5), default=4)
+    parser.add_argument('--concurrency', type=int, choices=range(1, 5), default=2)
     parser.add_argument('--stop', action='store_true', help='Yêu cầu worker nền dừng an toàn, không nhận thêm tác vụ.')
     args = parser.parse_args()
     if args.stop:

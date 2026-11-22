@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from sdd_data.return_inventory import ReturnClient, ReturnStore, build_returns, resolve_seller, return_points, UNKNOWN_AREA
+from sdd_data.return_inventory import ReturnClient, ReturnStore, build_returns, resolve_seller, return_points, seller_location_index, UNKNOWN_AREA
 
 MAPPING = {'z3': {'area':'KV3','source_area':'KV4','district':'Quận Bình Tân','old_ward':'Phường Bình Hưng Hòa A','ward':'Phường Bình Hưng Hòa'},
            'z5': {'area':'KV5','source_area':'KV6','district':'Quận 12','old_ward':'Phường Tân Thới Hiệp','ward':'Phường Tân Thới Hiệp'}}
@@ -14,6 +14,30 @@ def row(sid='TEST', status=67, **extra):
 
 
 class ReturnTests(unittest.TestCase):
+    def test_index_retains_merged_ward_ambiguity_and_district_filter(self):
+        a = {'area':'KV1','district':'District A','ward':'Merged','old_ward':'Old A'}
+        b = {'area':'KV2','district':'District B','ward':'Merged','old_ward':'Old B'}
+        mapping = {'merged': {'zone_candidates':[a, b]}}
+        index = seller_location_index(mapping)
+        ambiguous = resolve_seller({'lowest_seller_address_name':'Merged'}, {}, '', mapping, {}, location_index=index)
+        self.assertIsNone(ambiguous['area'])
+        self.assertEqual(ambiguous['ward'], 'Merged')
+        exact = resolve_seller({'lowest_seller_address_name':'Merged','seller_district_name':'District B'},
+                               {}, '', mapping, {}, location_index=index)
+        self.assertEqual(exact, {'area':'KV2','district':'District B','ward':'Old B','new_ward':'Merged'})
+
+    def test_coverage_is_indexed_once_for_entire_snapshot(self):
+        import sdd_data.return_inventory as module
+        mapping = {str(i): {'area':'KV1','district':f'District {i}', 'ward':f'Ward {i}'} for i in range(200)}
+        orders = [row(str(i), lowest_seller_address_name='Ward 1') for i in range(100)]
+        with patch.object(module, 'seller_location_index', wraps=seller_location_index) as index, \
+             patch.object(module, 'location_key', wraps=module.location_key) as normalize:
+            records, _ = build_returns(orders, mapping, {}, {}, {}, {}, [], '4232')
+        index.assert_called_once_with(mapping)
+        self.assertEqual(len(records), 100)
+        self.assertTrue(all(r['seller_area']=='Khu vực 1' for r in records))
+        self.assertLess(normalize.call_count, 2000)
+
     def test_five_area_mapping_and_cot_rider_candidates(self):
         rows, stats = build_returns([row(lowest_seller_address_id='1')], MAPPING, {'1':'Phường Bình Hưng Hòa'},
             {'TEST':'P1'}, {'P1':'BT_BHHA1_SDD'}, {},

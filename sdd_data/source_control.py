@@ -1,12 +1,15 @@
 """Private RPC client for the allowlisted source control plane. Never accepts a shell command."""
 import requests
 import json
+import socket
+
+from .retry import ControlError
 
 SOURCES = frozenset(('pickup_inventory', 'delivery_inventory', 'pickup_realtime', 'delivery_realtime',
                      'pickup_volume', 'delivery_volume', 'performance', 'return_inventory', 'onhold_daily', 'linehaul', 'wh_tracking'))
 RPCS = frozenset(('sync_pickup_point_catalog', 'publish_pickup_shop_volume', 'publish_central_delivery_realtime', 'claim_delivery_realtime_once', 'advertise_spx_session_key', 'consume_spx_credentials', 'pulse_spx_session', 'finish_spx_session_refresh', 'control_data_source', 'pulse_data_source_worker', 'claim_data_source_job',
                  'pulse_data_source_job', 'begin_data_source_publish', 'begin_data_source_inventory',
-                 'finish_data_source_job', 'publish_central_pickup', 'bridge_combined_inventory', 'publish_central_returns', 'enqueue_due_data_sources', 'publish_central_onhold', 'record_central_onhold', 'finalize_onhold_days', 'overnight_hold_capture_due', 'publish_overnight_hold', 'publish_linehaul', 'claim_overnight_status_sync', 'finish_overnight_status_sync', 'publish_wh_tracking'))
+                 'finish_data_source_job', 'complete_data_source_attempt', 'publish_central_pickup', 'bridge_combined_inventory', 'publish_central_returns', 'enqueue_due_data_sources', 'publish_central_onhold', 'record_central_onhold', 'finalize_onhold_days', 'overnight_hold_capture_due', 'publish_overnight_hold', 'publish_linehaul', 'claim_overnight_status_sync', 'finish_overnight_status_sync', 'publish_wh_tracking'))
 
 
 class Control:
@@ -14,15 +17,23 @@ class Control:
         self.url = settings.supabase_url + '/rest/v1/'
         self.session = requests.Session()
         self.session.headers.update({'apikey': settings.supabase_key,
-            'Authorization': 'Bearer ' + settings.supabase_key, 'Content-Type': 'application/json'})
+            'Authorization': 'Bearer ' + settings.supabase_key, 'Content-Type': 'application/json',
+            'X-SDD-Worker-Hostname': socket.gethostname()})
 
     def rpc(self, name, **payload):
         if name not in RPCS:
             raise ValueError('RPC not allowed')
+        endpoint = name
+        if name == 'publish_central_pickup' and 'p_rows' in payload:
+            from .pickup_transport import compact_pickup_payload
+            payload = compact_pickup_payload(payload)
+            endpoint = 'publish_central_pickup_compact'
         # Compact UTF-8 avoids expanding every Vietnamese label into repeated Unicode escapes.
         body = json.dumps(payload, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')
-        response = self.session.post(self.url + 'rpc/' + name, data=body,
-                                     timeout=150 if name == 'publish_central_pickup' else 20,
+        read_timeout = {'publish_central_pickup': 150, 'publish_central_returns': 90,
+                        'complete_data_source_attempt': 35, 'pulse_data_source_job': 12}.get(name, 25)
+        response = self.session.post(self.url + 'rpc/' + endpoint, data=body,
+                                     timeout=(7, read_timeout),
                                      allow_redirects=False)
         if not response.ok:
             # Keep service keys, request URLs and remote exception payloads out of browser logs.
@@ -32,7 +43,7 @@ class Control:
             except (ValueError, AttributeError):
                 code = 'unknown'
             code = code if re.fullmatch(r'[A-Z0-9]{5,12}', code) else 'unknown'
-            raise RuntimeError(f'Control RPC {name}: HTTP {response.status_code}, mã {code}')
+            raise ControlError(name, response.status_code, code)
         # PostgREST returns an empty body for void RPCs (including HTTP 200).
         # A successful acknowledgement must not stall subsequent worker heartbeats.
         return response.json() if response.content.strip() else None

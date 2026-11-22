@@ -37,7 +37,10 @@ class DeliveryRealtimeTests(unittest.TestCase):
         self.assertEqual(session.post.call_count, 3)
         self.assertEqual(session.post.call_args.kwargs['timeout'], (15,120))
         unavailable.close.assert_called_once()
-        self.assertEqual([call.args[0] for call in sleep.call_args_list], [1,2])
+        delays = [call.args[0] for call in sleep.call_args_list]
+        self.assertEqual(len(delays), 2)
+        self.assertTrue(2 <= delays[0] <= 4)
+        self.assertTrue(4 <= delays[1] <= 6)
         session.post.reset_mock(side_effect=True)
         session.post.return_value = Mock(status_code=403)
         with self.assertRaisesRegex(RuntimeError, 'HTTP 403'):

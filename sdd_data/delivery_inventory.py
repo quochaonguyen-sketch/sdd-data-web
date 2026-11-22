@@ -116,7 +116,7 @@ def inventory_windows(path, namespace, start, end):
 def save_inventory_windows(path, namespace, observed):
     merged=[]
     for left,right,total in sorted(observed):
-        if merged and merged[-1][1]+1==left and (not total and not merged[-1][2] or total>0 and merged[-1][2]>0 and total+merged[-1][2]<=400):
+        if merged and merged[-1][1]+1==left and total+merged[-1][2]<=400:
             merged[-1][1]=right
             merged[-1][2]+=total
         else:

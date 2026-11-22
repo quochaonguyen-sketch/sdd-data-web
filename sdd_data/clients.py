@@ -13,6 +13,7 @@ import tempfile
 from urllib.parse import quote
 
 from .config import Settings
+from .retry import RETRYABLE_HTTP, wait_before_retry
 from .transform import JOBS, TZ, UNRESOLVED_AREA, coverage_map, normalized
 
 log = logging.getLogger(__name__)
@@ -201,15 +202,15 @@ class SpxClient:
         import requests
         for attempt in range(3):
             try:
-                response = self.session().post(self.api_url, json=payload, timeout=60, allow_redirects=False)
+                response = self.session().post(self.api_url, json=payload, timeout=(10, 90), allow_redirects=False)
             except requests.RequestException:
                 if attempt == 2:
                     raise RuntimeError("Không kết nối được SPX sau 3 lần thử.") from None
-                clock.sleep(2 ** attempt)
+                wait_before_retry(attempt)
                 continue
-            if response.status_code == 429 or response.status_code >= 500:
+            if response.status_code in RETRYABLE_HTTP:
                 if attempt < 2:
-                    clock.sleep(2 ** attempt)
+                    wait_before_retry(attempt, response)
                     continue
             if response.status_code in (401, 403) or 300 <= response.status_code < 400:
                 try:
@@ -234,7 +235,7 @@ class SpxClient:
                 raise AuthenticationError("Phiên SPX hết hạn hoặc không có quyền đọc báo cáo.")
             if code in (90309999, "90309999"):
                 if attempt < 2:
-                    clock.sleep(1.0 + attempt)
+                    wait_before_retry(attempt, response)
                     continue
                 raise RuntimeError("SPX giới hạn tần suất yêu cầu (rate limit 90309999); thử lại sau.")
             if code not in (None, 0, "0") or body.get("redirect_to_error_page"):

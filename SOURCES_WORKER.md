@@ -6,7 +6,9 @@ Lịch theo chu kỳ có giờ **Bắt đầu/Kết thúc** riêng từng nguồ
 
 Cấu hình theo yêu cầu hiện tại: Pickup Realtime 07:00–17:00, giữ chu kỳ 15 phút; OH Delivery 07:00–23:00, giữ chu kỳ 5 phút. Các nguồn còn lại giữ lịch hiện có. Lượt tiếp theo ngoài khung được đưa về giờ mở khung tiếp theo. Chốt ngày OH lúc nửa đêm hoạt động riêng với khung thu thập.
 
-Worker trung tâm mặc định chạy 4 nguồn song song. FETCH_WORKERS hiện là 16; tiến trình con tôn trọng cấu hình tối đa 32 luồng fetch và 24 luồng inventory. Giữ cơ chế retry/backoff cho HTTP 429/5xx. Với sản lượng Pickup, chỉ tra các khung giờ đã tới; index pickup point không có list với total=0 là rỗng hợp lệ. Index thiếu dữ liệu được giữ các kết quả hợp lệ và tra chi tiết mã còn thiếu. Tập mã tracking vẫn là nguồn quyết định sản lượng; lỗi xác thực và dữ liệu chi tiết sai mã vẫn chặn ghi.
+Worker trung tâm mặc định chạy 2 nguồn song song. Mỗi tiến trình con dùng tối đa 8 luồng fetch và 6 luồng inventory. Request SPX có tối đa 10 giây để kết nối và 90–120 giây chờ dữ liệu. Với sản lượng Pickup, chỉ tra các khung giờ đã tới. Index pickup point báo total=0 vẫn được kiểm tra theo logic của nguồn. Tập mã tracking vẫn là nguồn quyết định sản lượng.
+
+Lỗi mạng, timeout và giới hạn tần suất được thử lại ngay trong lượt đọc. Khi hết các lần thử nhanh, worker giữ cùng mã tác vụ và xếp lại lịch sau khoảng 1 phút, tăng dần tối đa 15 phút. Các lần thử tiếp tục trong khung lịch phù hợp. Nút Dừng hủy tác vụ đang chờ thử lại. Với bước ghi, chỉ tự thử lại khi RPC xác nhận giao dịch đã hoàn tác hoặc xác định chưa bắt đầu ghi. Lỗi phiên đăng nhập, dữ liệu sai cấu trúc và trạng thái ghi chưa xác định được báo để kiểm tra.
 
 Mở `run_worker.cmd` hoặc `run_sources_worker.cmd` trên máy chủ: worker chạy nền, cửa sổ CMD tự đóng khi bật thành công. Bấm lại khi đã chạy sẽ không tạo thêm bản trùng. Có thể bật **Worker trung tâm** trong launcher; cách này worker thuộc tiến trình launcher. `launcher.py --worker` chạy trong cửa sổ hiện tại, hỗ trợ Ctrl+C. `--worker-once` giữ chế độ kiểm tra tồn cũ.
 

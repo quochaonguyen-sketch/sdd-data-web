@@ -283,7 +283,7 @@ def main(argv=None):
                                        delivery_lookback=args.lookback_days, pickup_lookback=min(7, args.lookback_days),
                                        allow_unmapped=args.allow_unmapped is not False, job_timeout=args.job_timeout)
                 else:
-                    run_central_worker(settings, stop_event=worker_stop, concurrency=4)
+                    run_central_worker(settings, stop_event=worker_stop)
             finally:
                 signal.signal(signal.SIGINT, previous_handler)
         elif args.inventory_worker or args.inventory_once:

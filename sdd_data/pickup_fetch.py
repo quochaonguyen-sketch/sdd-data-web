@@ -1,10 +1,31 @@
 """Parallel, complete live reads with reusable page connections and bounded fan-out."""
 from concurrent.futures import ThreadPoolExecutor
+import logging
 
 from .pickup_cache import PICKUP_PAGE_SIZE, cached_windows, save_windows
+from .retry import SourceBusy
+
+log = logging.getLogger(__name__)
+
+
+class LiveSourceChanged(SourceBusy):
+    """Mutable SPX timestamps moved an identity between disjoint windows."""
 
 
 def fetch_live_windows(client, path, date_field, start, end, filters=None,
+                       id_fields=("id", "pickup_task_id"), *, cache_path=None,
+                       namespace=None, initial_windows=None):
+    for attempt in range(2):
+        try:
+            return _fetch_live_windows_once(client, path, date_field, start, end, filters, id_fields,
+                cache_path=cache_path, namespace=namespace, initial_windows=initial_windows)
+        except LiveSourceChanged:
+            if attempt:
+                raise
+            log.info('SPX %s changed between windows; re-read the complete source once.', path)
+
+
+def _fetch_live_windows_once(client, path, date_field, start, end, filters=None,
                        id_fields=("id", "pickup_task_id"), *, cache_path=None,
                        namespace=None, initial_windows=None):
     windows = cached_windows(cache_path, namespace, end, start) if cache_path else [(start, end)]
@@ -28,8 +49,10 @@ def fetch_live_windows(client, path, date_field, start, end, filters=None,
             rows.extend(items)
             observed.extend(completed)
     ids = [str(next((row.get(field) for field in id_fields if row.get(field)), "")) for row in rows]
-    if any(not identity for identity in ids) or len(ids) != len(set(ids)):
-        raise RuntimeError("SPX lặp/thiếu mã qua khoảng thời gian; giữ snapshot cũ.")
+    if any(not identity for identity in ids):
+        raise RuntimeError('SPX source is missing an identity; keep previous snapshot.')
+    if len(ids) != len(set(ids)):
+        raise LiveSourceChanged("SPX lặp/thiếu mã qua khoảng thời gian; giữ snapshot cũ.")
     check = getattr(client, "check_deadline", None)
     if check:
         check()

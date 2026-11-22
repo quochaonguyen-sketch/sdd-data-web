@@ -14,6 +14,34 @@ from sdd_data.pickup_realtime import RealtimeClient, RealtimeStore, sync_once
 
 
 class PickupParallelTests(unittest.TestCase):
+    def test_pending_statuses_overlap_and_keep_all_ids(self):
+        from datetime import datetime
+        from sdd_data.transform import TZ
+        gate = threading.Barrier(2, timeout=3)
+        client = RealtimeClient.__new__(RealtimeClient)
+        client.settings = SimpleNamespace(station_id='4232')
+        def fetch(client, path, field, start, end, filters, fields, **kwargs):
+            gate.wait()
+            return [{'pickup_order_id':str(filters['status'])}]
+        with patch('sdd_data.pickup_realtime.fetch_live_windows', side_effect=fetch):
+            self.assertEqual(client.pending_orders(datetime.now(TZ)),
+                             [{'pickup_order_id':'0'}, {'pickup_order_id':'2'}])
+        with patch('sdd_data.pickup_realtime.fetch_live_windows', return_value=[{'pickup_order_id':'moved'}]):
+            self.assertEqual(client.pending_orders(datetime.now(TZ)),
+                             [{'pickup_order_id':'moved'}, {'pickup_order_id':'moved'}])
+
+    def test_moving_identity_retries_complete_source_without_deduplicating(self):
+        from sdd_data.pickup_fetch import LiveSourceChanged
+        with patch('sdd_data.pickup_fetch._fetch_live_windows_once',
+                   side_effect=[LiveSourceChanged('moved'), [{'id':'stable'}]]) as read:
+            rows = fetch_live_windows(Mock(), 'source', 'ctime', 0, 100)
+        self.assertEqual(rows, [{'id':'stable'}])
+        self.assertEqual(read.call_count, 2)
+        with patch('sdd_data.pickup_fetch._fetch_live_windows_once', side_effect=LiveSourceChanged('moved')) as read:
+            with self.assertRaises(LiveSourceChanged):
+                fetch_live_windows(Mock(), 'source', 'ctime', 0, 100)
+        self.assertEqual(read.call_count, 2)
+
     def test_split_before_mutable_pagination_keeps_all_current_ids(self):
         client = RealtimeClient.__new__(RealtimeClient)
         client.settings = SimpleNamespace(inventory_workers=2)

@@ -45,7 +45,7 @@ class PickupCacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "windows.json"
             save_windows(path, "station", [(0, 30, 0), (31, 60, 0), (61, 100, 3)])
-            self.assertEqual(cached_windows(path, "station", 120), [(0, 60), (61, 100), (101, 120)])
+            self.assertEqual(cached_windows(path, "station", 120), [(0, 100), (101, 120)])
             self.assertEqual(cached_windows(path, "other", 120), [(0, 120)])
             path.write_text('{"version":1,"station":"station","windows":[[2,100]]}')
             self.assertEqual(cached_windows(path, "station", 120), [(0, 120)])
@@ -63,13 +63,14 @@ class PickupCacheTests(unittest.TestCase):
                 calls.append(params)
                 left, right = map(int, params["ctime"].split(","))
                 # Even a formerly empty window can acquire a new Assigned order.
-                rows = [{"pickup_order_id": "old", "status": 2, "on_hold_reason": 132}] if left == 0 else (
-                    [{"pickup_order_id": "newly-assigned", "status": 2}] if left == 101 else [])
+                candidates = [(50, {"pickup_order_id": "old", "status": 2, "on_hold_reason": 132}),
+                              (150, {"pickup_order_id": "newly-assigned", "status": 2})]
+                rows = [row for stamp, row in candidates if left <= stamp <= right]
                 return {"list": rows, "total": len(rows), "count": params["count"]}
             client.get = get
             rows = client.fetch_all_pickup_orders()
             self.assertEqual(len(rows), 2)
-            self.assertEqual(len(calls), 3)
+            self.assertEqual(len(calls), 2)
             self.assertTrue(all(p["count"] == 500 for p in calls))
             self.assertTrue(client.assigned_source_complete)
 

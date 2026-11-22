@@ -33,27 +33,30 @@ def integer(value):
 
 class DeliveryRealtimeClient(SpxClient):
     def fetch_progress(self):
+        from .retry import RETRYABLE_HTTP, wait_before_retry
         # SpxSession handles cookie renewal once, using this project's private profile.
         for attempt in range(3):
+            response = None
             try:
                 response = self.session().post(API, timeout=(15, 120), allow_redirects=False)
             except requests.RequestException:
                 if attempt == 2:
                     raise RuntimeError('Không kết nối được Delivery realtime sau 3 lần thử; giữ snapshot cũ.') from None
             else:
-                if response.status_code != 429 and response.status_code < 500:
+                if response.status_code not in RETRYABLE_HTTP:
                     break
                 if attempt == 2:
                     break
-                response.close()
             logging.warning('Delivery realtime: lỗi mạng/nguồn tạm thời; thử lại lần %s/3.', attempt + 2)
-            time.sleep(2 ** attempt)
+            wait_before_retry(attempt, response)
         if response.status_code != 200:
             raise RuntimeError(f'Delivery realtime: HTTP {response.status_code}; giữ snapshot cũ.')
         try:
             body = response.json()
         except ValueError:
             raise RuntimeError('Delivery realtime không trả JSON; kiểm tra phiên SPX.') from None
+        if isinstance(body, dict) and str(body.get('retcode', body.get('error', 0))) == '90309999':
+            raise RuntimeError('Delivery realtime: SPX giới hạn tần suất (90309999).')
         if not isinstance(body, dict) or body.get('retcode', body.get('error', 0)) not in (None, 0, '0') or body.get('is_login') is False or body.get('redirect_to_error_page'):
             raise RuntimeError('SPX từ chối báo cáo Delivery; giữ snapshot cũ.')
         data = body.get('data')

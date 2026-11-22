@@ -153,19 +153,32 @@ def return_points(settings, rows, client, root, saved_points=None):
     return {sid: cache.get(sid, '') for sid in ids}
 
 
-def resolve_seller(order, detail, route, mapping, seller_wards):
+def seller_location_index(mapping):
+    """Normalize coverage once per scan, including merged/ambiguous wards."""
+    wards, districts, names = {}, {}, set()
+    for entry in mapping.values():
+        name = entry.get('district')
+        if name:
+            names.add(name)
+        districts.setdefault(location_key(name), []).append(entry)
+        for info in entry.get('zone_candidates', [entry]):
+            district = location_key(info.get('district'))
+            for ward in {location_key(info.get('ward')), location_key(info.get('old_ward'))} - {''}:
+                wards.setdefault(ward, []).append((district, info))
+    return wards, districts, names
+
+
+def resolve_seller(order, detail, route, mapping, seller_wards, *, location_index=None):
+    ward_index, district_index, district_names = location_index if location_index is not None else seller_location_index(mapping)
     district = str(order.get('seller_district_name') or order.get('seller_addr_district') or '').strip()
     ward = seller_wards.get(str(order.get('lowest_seller_address_id') or '')) or str(order.get('lowest_seller_address_name') or '').strip()
     ward = ward or parse_pickup_ward(detail.get('district', ''), str(order.get('seller_address') or ''), detail.get('point_address', ''))
-    confirmed = confirmed_pickup_location(route, ward, mapping) if route else None
+    confirmed = confirmed_pickup_location(route, ward, mapping, district_names, district_index) if route else None
     if confirmed:
         district = confirmed['district']
-    candidates = []
-    for entry in mapping.values():
-        for info in entry.get('zone_candidates', [entry]):
-            if ward and location_key(ward) in {location_key(info.get('ward')), location_key(info.get('old_ward'))}:
-                if not district or location_key(info.get('district')) == location_key(district):
-                    candidates.append(info)
+    district_key = location_key(district)
+    candidates = [info for key, info in ward_index.get(location_key(ward), [])
+                  if not district or key == district_key]
     identities = {(item.get('area'), item.get('district'), item.get('ward')) for item in candidates}
     if len(identities) == 1:
         area, district, new_ward = next(iter(identities))
@@ -180,6 +193,7 @@ def resolve_seller(order, detail, route, mapping, seller_wards):
 
 
 def build_returns(rows, mapping, seller_wards, points, routes, details, riders, station_id):
+    location_index = seller_location_index(mapping)
     by_route = {}
     for rider in riders:
         if rider.get('status') != 'active':
@@ -195,7 +209,7 @@ def build_returns(rows, mapping, seller_wards, points, routes, details, riders, 
         seen.add(sid)
         point = points.get(sid, '')
         route = routes.get(point, '')
-        info = resolve_seller(row, details.get(point, {}), route, mapping, seller_wards)
+        info = resolve_seller(row, details.get(point, {}), route, mapping, seller_wards, location_index=location_index)
         area = info.get('area')
         label = f'Khu vực {area[-1]}' if area in {'KV1','KV2','KV3','KV4','KV5'} else UNKNOWN_AREA
         stats[label] += 1
@@ -225,25 +239,32 @@ def build_returns(rows, mapping, seller_wards, points, routes, details, riders, 
 
 def prepare_returns(settings, root=ROOT):
     client, points_client, store = ReturnClient(settings), PickupInventoryClient(settings), ReturnStore(settings)
+    started = time.monotonic()
+    def measured(label, function, *args):
+        before = time.monotonic()
+        result = function(*args)
+        log.info('Return stage %s: %.3fs', label, time.monotonic() - before)
+        return result
     try:
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            orders_future = pool.submit(client.fetch)
-            mapping_future = pool.submit(load_coverage, settings)
-            wards_future = pool.submit(load_seller_wards, settings)
-            riders_future = pool.submit(store.riders)
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            orders_future = pool.submit(measured, 'orders', client.fetch)
+            mapping_future = pool.submit(measured, 'coverage', load_coverage, settings)
+            wards_future = pool.submit(measured, 'seller_wards', load_seller_wards, settings)
+            riders_future = pool.submit(measured, 'riders', store.riders)
+            routes_future = pool.submit(measured, 'routes', points_client.routes)
             rows = orders_future.result()
             log.info('Hàng trả: đọc đủ %s đơn tại hub %s.', len(rows), settings.station_id)
             riders = riders_future.result()
-            with ThreadPoolExecutor(max_workers=2) as lookup_pool:
-                routes_future = lookup_pool.submit(points_client.routes)
-                points = return_points(settings, rows, points_client, root, store.saved_points())
-                details = points_client.fetch_point_details(set(points.values()) - {''}, Path(root) / 'data')
-                routes, _ = routes_future.result()
-            result, stats = build_returns(rows, mapping_future.result(), wards_future.result(), points, routes, details, riders, settings.station_id)
+            saved = measured('saved_points', store.saved_points)
+            points = measured('points', return_points, settings, rows, points_client, root, saved)
+            details = measured('point_details', points_client.fetch_point_details, set(points.values()) - {''}, Path(root) / 'data')
+            routes, _ = routes_future.result()
+            result, stats = measured('build', build_returns, rows, mapping_future.result(), wards_future.result(), points, routes, details, riders, settings.station_id)
         artifact = Path(root) / 'data' / f'return-inventory-{datetime.now(TZ):%Y%m%d-%H%M%S-%f}.json'
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_text(json.dumps({'stats': stats, 'records': result}, ensure_ascii=False), encoding='utf-8')
         log.info('Hàng trả: %s.', stats)
+        log.info('Return preparation total: %.3fs', time.monotonic() - started)
         return result, stats
     finally:
         client.close()

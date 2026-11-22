@@ -200,6 +200,7 @@ class LinehaulClient(SpxClient):
             self._next_request = clock.monotonic()+0.6
 
     def get(self, path, params, *, dashboard=False):
+        from .retry import RETRYABLE_HTTP, wait_before_retry
         for attempt in range(5):
             self.pace()
             try:
@@ -208,22 +209,24 @@ class LinehaulClient(SpxClient):
             except requests.RequestException:
                 if attempt == 4:
                     raise RuntimeError('Không kết nối được SPX LH sau 5 lần thử.') from None
+                wait_before_retry(attempt)
             else:
                 if response.status_code == 200:
                     try:
                         body = response.json()
                     except ValueError:
                         raise RuntimeError('LH không trả JSON; kiểm tra đăng nhập SPX.') from None
-                    if isinstance(body,dict) and str(body.get('retcode')) == '130008001' and attempt<4:
-                        self.pace(2 ** (attempt+1))
-                        continue
+                    if isinstance(body,dict) and str(body.get('retcode')) in ('130008001', '90309999'):
+                        if attempt < 4:
+                            wait_before_retry(attempt, response)
+                            continue
+                        raise RuntimeError('SPX LH trả HTTP 429; giữ snapshot cũ.')
                     if not isinstance(body, dict) or body.get('retcode') not in (0, '0') or not isinstance(body.get('data'), dict):
                         raise RuntimeError('SPX từ chối hoặc trả dữ liệu LH không hợp lệ.')
                     return body['data']
-                if response.status_code != 429 and response.status_code < 500 or attempt == 4:
+                if response.status_code not in RETRYABLE_HTTP or attempt == 4:
                     raise RuntimeError(f'SPX LH trả HTTP {response.status_code}.')
-                response.close()
-            clock.sleep(2 ** attempt)
+                wait_before_retry(attempt, response)
 
     def dashboard_trips(self):
         data = self.get('', {}, dashboard=True)

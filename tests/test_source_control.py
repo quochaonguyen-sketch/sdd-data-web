@@ -16,12 +16,13 @@ class ControlTests(unittest.TestCase):
             payload = {'p_rows': [{'ward': 'Phường Tân Định', 'status': 'Assigned'}]}
             self.assertEqual(control.rpc('publish_central_pickup', **payload), 1)
             kwargs = session.post.call_args.kwargs
-            self.assertEqual(kwargs['timeout'], 150)
-            self.assertEqual(json.loads(kwargs['data']), payload)
+            self.assertEqual(kwargs['timeout'], (7, 150))
+            from sdd_data.pickup_transport import compact_pickup_payload
+            self.assertEqual(json.loads(kwargs['data']), json.loads(json.dumps(compact_pickup_payload(payload))))
+            self.assertTrue(session.post.call_args.args[0].endswith('/publish_central_pickup_compact'))
             self.assertNotIn(b'\\u', kwargs['data'])
-            self.assertLess(len(kwargs['data']), len(json.dumps(payload).encode()))
             control.rpc('pulse_data_source_worker', p_worker='test')
-            self.assertEqual(session.post.call_args.kwargs['timeout'], 20)
+            self.assertEqual(session.post.call_args.kwargs['timeout'], (7, 25))
             with self.assertRaises(ValueError):
                 control.rpc('publish_central_pickup', p_at=float('nan'))
             control.close()

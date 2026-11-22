@@ -19,7 +19,7 @@ def is_running(root):
         return True
 
 
-def start_background(root=ROOT, concurrency=4):
+def start_background(root=ROOT, concurrency=2):
     root = Path(root)
     if not 1 <= concurrency <= 4:
         raise ValueError('Concurrency 1..4')
@@ -53,7 +53,7 @@ def start_background(root=ROOT, concurrency=4):
 
 def main():
     parser = argparse.ArgumentParser(description='Bật worker trung tâm chạy nền')
-    parser.add_argument('--concurrency', type=int, choices=range(1, 5), default=4)
+    parser.add_argument('--concurrency', type=int, choices=range(1, 5), default=2)
     args = parser.parse_args()
     try:
         return start_background(concurrency=args.concurrency)
