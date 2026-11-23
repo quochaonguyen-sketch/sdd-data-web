@@ -26,7 +26,7 @@ class WhTests(unittest.TestCase):
     def test_exact_dual_payload_and_no_volume_account_filter(self):
         client = self.client([])
         self.assertEqual(client.payload(2), {'count': 24, 'high_value': 1, 'page_no': 1,
-            'pickup_station_ids': '5521', 'station_ids': '4232', 'order_status': '0,7'})
+            'pickup_station_ids': '5521', 'station_ids': '4232', 'order_status': '0,7,6'})
         self.assertEqual(client.payload(1)['current_station_ids'], '4232')
         self.assertNotIn('station_ids', client.payload(1))
         self.assertNotIn('order_account', client.payload(1))
@@ -51,6 +51,29 @@ class WhTests(unittest.TestCase):
             'children': [{'status': '7', 'timestamp': ts + 60, 'message': ''}]}]),
             datetime.fromtimestamp(ts + 60, TZ).isoformat())
         self.assertIsNone(pending_receive_timestamp([{'status': 7, 'timestamp': 'bad'}]))
+
+    def test_soc_returned_from_station_search_supersedes_active_status(self):
+        returned = order('RETURNED', 6)
+        client = self.client([{'list': [returned], 'total': 1}])
+        self.assertEqual(client.fetch_api(2), [returned])
+
+        client = Mock()
+        old_return = order('OLD_RETURN', 6)
+        client.fetch_api.side_effect = [[order('RETURNED', 2)], [returned, old_return]]
+        day = datetime(2026, 11, 23, 10, 0, tzinfo=TZ)
+        client.tracking_events.side_effect = lambda sid: [
+            {'status': 6, 'timestamp': int(day.timestamp()) - (86400 if sid == 'OLD_RETURN' else 0)},
+        ]
+        settings = Mock(workers=4, station_id='4232')
+        with tempfile.TemporaryDirectory() as folder, \
+                patch('sdd_data.wh_tracking.load_coverage', return_value={}), \
+                patch('sdd_data.wh_tracking.datetime', wraps=datetime) as clock, \
+                patch('sdd_data.wh_tracking.WhClient', return_value=client):
+            clock.now.return_value = day
+            rows, _ = prepare_wh(settings, Path(folder))
+        self.assertEqual([(row['shipment_id'], row['raw_status']) for row in rows],
+                         [('RETURNED', 'return_SOC_Returned')])
+        client.tracking.assert_not_called()
 
     def test_adaptive_windows_avoid_offset_pagination(self):
         a, b = order(create_time=1), order('TEST002', create_time=2)

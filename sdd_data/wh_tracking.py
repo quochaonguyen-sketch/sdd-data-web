@@ -15,7 +15,11 @@ from .runner import configure_logging
 from .transform import TZ, as_datetime, match_zone, operating_area
 
 TRACKING_INFO = 'https://spx.shopee.vn/api/fleet_order/order/detail/tracking_info'
-STATUSES = {'0': 'Created', '1': 'LMhub_received', '2': 'Delivering', '4': 'Delivered', '5': 'Onhold', '7': 'SOC_pendingReceive'}
+SOC_RETURNED = '6'
+STATUSES = {
+    '0': 'Created', '1': 'LMhub_received', '2': 'Delivering', '4': 'Delivered',
+    '5': 'Onhold', '7': 'SOC_pendingReceive', SOC_RETURNED: 'return_SOC_Returned',
+}
 
 
 def order_id(row):
@@ -23,6 +27,10 @@ def order_id(row):
 
 
 def pending_receive_timestamp(events):
+    return tracking_timestamp(events, '7', 'Parcel pending inbound')
+
+
+def tracking_timestamp(events, status, message=None):
     pending, timestamps = list(events), []
     while pending:
         event = pending.pop()
@@ -31,7 +39,7 @@ def pending_receive_timestamp(events):
         for key in ('children', 'event_children'):
             if isinstance(event.get(key), list):
                 pending.extend(event[key])
-        if str(event.get('status')) == '7' or event.get('message') == 'Parcel pending inbound':
+        if str(event.get('status')) == status or (message and event.get('message') == message):
             value = as_datetime(event.get('timestamp'))
             if value:
                 timestamps.append(value)
@@ -42,7 +50,7 @@ class WhClient(SpxClient):
     def payload(self, api, page=1, active_only=False):
         return {'count': 24, 'high_value': 1, 'page_no': page, 'pickup_station_ids': '5521',
                 **({'current_station_ids': self.settings.station_id, 'order_status': '1,2,5' if active_only else '1,2,5,4'}
-                   if api == 1 else {'station_ids': self.settings.station_id, 'order_status': '0,7'})}
+                   if api == 1 else {'station_ids': self.settings.station_id, 'order_status': f'0,7,{SOC_RETURNED}'})}
 
     def fetch_api(self, api, active_only=False):
         allowed = set(self.payload(api, active_only=active_only)['order_status'].split(','))
@@ -136,6 +144,9 @@ class WhClient(SpxClient):
         return rows
 
     def tracking(self, sid):
+        return pending_receive_timestamp(self.tracking_events(sid))
+
+    def tracking_events(self, sid):
         from .retry import RETRYABLE_HTTP, wait_before_retry
         for attempt in range(3):
             try:
@@ -170,7 +181,7 @@ class WhClient(SpxClient):
                 raise RuntimeError('WH: thiếu lịch sử tracking; giữ snapshot cũ.')
             if data.get('shipment_id') and str(data['shipment_id']).upper() != sid:
                 raise RuntimeError('WH: lịch sử thuộc mã đơn khác.')
-            return pending_receive_timestamp(data['tracking_list'])
+            return data['tracking_list']
 
 
 def build_rows(orders, mapping, day):
@@ -224,6 +235,7 @@ def load_wh_cache(path, day):
     return {
         'day': day.isoformat(),
         'soc_pending': data.get('soc_pending', {}),
+        'soc_returned': data.get('soc_returned', {}),
         'known_past_delivered': past,
         'delivered_today': data.get('delivered_today', {}) if cached_day == day.isoformat() else {},
     }
@@ -233,10 +245,31 @@ def save_wh_cache(path, cache):
     payload = {
         'day': cache['day'],
         'soc_pending': cache.get('soc_pending', {}),
+        'soc_returned': cache.get('soc_returned', {}),
         'known_past_delivered': sorted(cache.get('known_past_delivered', set())),
         'delivered_today': cache.get('delivered_today', {}),
     }
     write_cache(path, payload)
+
+
+def resolve_soc_returns(client, orders, cache, workers):
+    returned = cache.setdefault('soc_returned', {})
+    pending = cache.setdefault('soc_pending', {})
+    ids = [order_id(order) for order in orders]
+    missing = [sid for sid in ids if as_datetime(returned.get(sid)) is None]
+    if missing:
+        def milestones(sid):
+            events = client.tracking_events(sid)
+            return tracking_timestamp(events, SOC_RETURNED), pending_receive_timestamp(events)
+
+        with ThreadPoolExecutor(max_workers=min(4, workers)) as pool:
+            for sid, (stamp, inbound) in zip(missing, pool.map(milestones, missing)):
+                if not stamp:
+                    raise RuntimeError('WH: thiếu mốc hoàn SOC; giữ snapshot cũ.')
+                returned[sid] = int(datetime.fromisoformat(stamp).timestamp())
+                if inbound:
+                    pending[sid] = inbound
+    return returned
 
 
 def prepare_wh(settings, root=ROOT):
@@ -255,10 +288,21 @@ def prepare_wh(settings, root=ROOT):
             rows = client.fetch_api(api)
             logging.info('WH API%s: %s đơn.', api, len(rows))
             for row in rows:
-                merged.setdefault(order_id(row), row)
+                sid = order_id(row)
+                if str(row.get('order_status')) == SOC_RETURNED:
+                    merged[sid] = row
+                else:
+                    merged.setdefault(sid, row)
+        returns = [row for row in merged.values() if str(row.get('order_status')) == SOC_RETURNED]
+        returned_at = resolve_soc_returns(client, returns, cache, settings.workers)
+        for row in returns:
+            sid = order_id(row)
+            if as_datetime(returned_at[sid]).date() != day:
+                del merged[sid]
         rows = build_rows(list(merged.values()), mapping, day)
         soc_cache = cache.setdefault('soc_pending', {})
-        missing_ids = [r['shipment_id'] for r in rows if not soc_cache.get(r['shipment_id'])]
+        missing_ids = [r['shipment_id'] for r in rows
+                       if r['raw_status'] != STATUSES[SOC_RETURNED] and not soc_cache.get(r['shipment_id'])]
         if missing_ids:
             with ThreadPoolExecutor(max_workers=min(8, settings.workers)) as pool:
                 fresh_stamps = list(pool.map(client.tracking, missing_ids))
