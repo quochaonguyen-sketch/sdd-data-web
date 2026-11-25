@@ -52,19 +52,17 @@ def parse_pickup_ward(district: str, full_address: str, point_address: str = "")
 
 
 def pickup_cot_group(dt: datetime) -> str:
-    """COT group for pickup orders:
-    00:00 - 11:15 -> COT 1 (D0)
-    11:15 - 15:00 -> COT 2 (D0)
-    >= 15:00      -> COT 1 (D+1)
-    """
-    minutes = dt.hour * 60 + dt.minute
-    d0 = dt.strftime("%d/%m/%Y")
-    d1 = (dt + timedelta(days=1)).strftime("%d/%m/%Y")
-    if minutes <= 675:
-        return f"{d0} COT 1"
-    if minutes <= 900:
-        return f"{d0} COT 2"
-    return f"{d1} COT 1"
+    day = dt.strftime("%d/%m/%Y")
+    if (dt.hour, dt.minute) < (10, 30):
+        return f"{day} COT 1"
+    if dt.hour < 15:
+        return f"{day} COT 2"
+    return f"{dt + timedelta(days=1):%d/%m/%Y} COT 1"
+
+
+def created_pickup_window(snapshot: datetime) -> tuple[datetime, datetime]:
+    cutoff = snapshot.replace(hour=15, minute=0, second=0, microsecond=0)
+    return cutoff - timedelta(days=1), cutoff
 
 
 class PickupInventoryClient(PickupRouteClient):
@@ -139,19 +137,23 @@ class PickupInventoryClient(PickupRouteClient):
         kwargs.setdefault("page_size", 200)
         return RealtimeClient.search_window(self, *args, **kwargs)
 
-    def fetch_all_pickup_orders(self, lookback_days: int = 7) -> list[dict]:
-        """Fetch explicit status=2 across all pending backlog; flags are checked again below."""
+    def fetch_all_pickup_orders(self, lookback_days: int = 7, *, snapshot=None) -> list[dict]:
+        """Fetch all Assigned and the reporting day's Created orders."""
         self.check_deadline()
-        now = datetime.now(TZ)
+        now = snapshot or datetime.now(TZ)
         end = int(now.timestamp())
+        created_start, created_end = created_pickup_window(now)
+        created = fetch_live_windows(self, "fm_hub/pickup_order/search", "ctime",
+            int(created_start.timestamp()), min(end, int(created_end.timestamp()) - 1),
+            {"status": 0, "fetch_total": 1, "fetch_list": 1}, ("pickup_order_id",))
         path = getattr(self, "order_window_cache", None)
         rows = fetch_live_windows(self, "fm_hub/pickup_order/search", "ctime", 0, end,
             {"status": 2, "fetch_total": 1, "fetch_list": 1}, ("pickup_order_id",),
             cache_path=path, namespace=self.settings.station_id)
         self.check_deadline()
         self.assigned_source_complete = True
-        log.info("Pickup inventory: đọc đủ %s bản ghi SPX status=2, kiểm tiếp cờ Onhold/Picked.", len(rows))
-        return rows
+        log.info("Pickup inventory: %s Assigned, %s Created.", len(rows), len(created))
+        return rows + created
 
     def fetch_today_tasks(self) -> dict:
         """Fetch today's pickup tasks to map pickup points to assigned riders."""
@@ -268,7 +270,6 @@ def build_pickup_inventory(orders: list[dict], mapping: dict, areas: tuple[str, 
         if not tracking or tracking in seen:
             stats["duplicates"] += 1
             continue
-        seen.add(tracking)
 
         pid = str(order.get("pickup_point_id") or "").strip()
         point_name = str(order.get("pickup_point_name") or "").strip()
@@ -277,11 +278,18 @@ def build_pickup_inventory(orders: list[dict], mapping: dict, areas: tuple[str, 
         full_address = detail.get("full_address") or str(order.get("full_address") or "").strip()
         point_address = detail.get("point_address") or ""
 
-        # Only explicit, effective Assigned belongs in this inventory.
         status = pickup_order_status(order)
-        if status != "Assigned":
+        if status not in ("Assigned", "Created"):
             stats["excluded_" + status.lower().replace(" ", "_")] += 1
             continue
+        parsed_dt = as_datetime(order.get("create_time")) or as_datetime(order.get("ctime"))
+        if status == "Created":
+            created_start, created_end = created_pickup_window(datetime.fromisoformat(snapshot_at))
+            if (not parsed_dt or not created_start <= parsed_dt < created_end
+                or str(order.get("driver_id") or "").strip() not in ("", "0")):
+                stats["excluded_created"] += 1
+                continue
+        seen.add(tracking)
 
         signature = None
         if record_cache is not None:
@@ -294,8 +302,6 @@ def build_pickup_inventory(orders: list[dict], mapping: dict, areas: tuple[str, 
                 continue
 
         # Timestamp & COT
-        cts = order.get("create_time") or order.get("ctime")
-        parsed_dt = as_datetime(cts) or as_datetime(order.get("ctime"))
         dt = parsed_dt or datetime.now(TZ)
         create_str = dt.strftime("%d/%m/%Y %H:%M:%S")
         cot_group = pickup_cot_group(dt)
@@ -336,7 +342,7 @@ def build_pickup_inventory(orders: list[dict], mapping: dict, areas: tuple[str, 
             stats["outside_scope"] += 1
             continue
 
-        assigned_riders = point_riders.get(pid, "")
+        assigned_riders = point_riders.get(pid, "") if status == "Assigned" else ""
 
         record = {
             "tracking_id": tracking,
@@ -490,8 +496,8 @@ class PickupStore(WebsiteStore):
         """Upsert rows into pickup_48h_no_api2 and clean up stale snapshots."""
         if not rows and not allow_empty:
             raise ValueError("Không ghi snapshot pickup rỗng khi chưa kiểm đủ nguồn.")
-        if any(row.get("status") != "Assigned" for row in rows):
-            raise ValueError("Tồn pickup chỉ được ghi Assigned, chưa Onhold/Picked.")
+        if any(row.get("status") not in ("Assigned", "Created") for row in rows):
+            raise ValueError("Tồn pickup chỉ được ghi Assigned hoặc Created.")
 
         for r in rows:
             r["snapshot_id"] = snapshot_id
@@ -523,8 +529,9 @@ class PickupStore(WebsiteStore):
 def prepare_pickup_inventory(settings, *, root, stop_event=None, lookback_days=7, orders=None):
     """Full execution pipeline for fetching and preparing pickup inventory."""
     mapping = load_coverage(settings)
-    snapshot_id = datetime.now(TZ).strftime("%Y%m%dT%H%M%S")
-    snapshot_at = datetime.now(TZ).isoformat()
+    now = datetime.now(TZ)
+    snapshot_id = now.strftime("%Y%m%dT%H%M%S")
+    snapshot_at = now.isoformat()
     cache_dir = Path(root) / "data"
 
     source_complete = False
@@ -547,13 +554,13 @@ def prepare_pickup_inventory(settings, *, root, stop_event=None, lookback_days=7
             with ThreadPoolExecutor(max_workers=3) as pool:
                 task_future = pool.submit(measured, "tasks", client.fetch_today_tasks)
                 route_future = pool.submit(measured, "routes", client.routes)
-                order_future = pool.submit(measured, "orders", client.fetch_all_pickup_orders, lookback_days)
+                order_future = pool.submit(measured, "orders", lambda: client.fetch_all_pickup_orders(lookback_days, snapshot=now))
                 raw_orders = order_future.result()
                 source_count = len(raw_orders)
                 orders = []
                 for order in raw_orders:
                     state = pickup_order_status(order)
-                    if state == "Assigned":
+                    if state in ("Assigned", "Created"):
                         orders.append(order)
                     else:
                         excluded_states["excluded_" + state.lower().replace(" ", "_")] += 1
@@ -571,7 +578,7 @@ def prepare_pickup_inventory(settings, *, root, stop_event=None, lookback_days=7
         task_info = {"point_riders": {}, "accepted_pids": set()}
 
     record_cache = PickupRecordCache(cache_dir / f"pickup-inventory-records-{settings.station_id}.json",
-                                     [mapping, settings.areas, settings.station_id, "v3-confirmed-district"])
+                                     [mapping, settings.areas, settings.station_id, "v4-pickup-cot-1030"])
     transform_started = clock.monotonic()
     rows, stats = build_pickup_inventory(orders, mapping, settings.areas, point_details,
                                          routes, task_info, snapshot_id, snapshot_at, record_cache)
@@ -592,6 +599,6 @@ def prepare_pickup_inventory(settings, *, root, stop_event=None, lookback_days=7
     artifact = cache_dir / f"pickup-inventory-{datetime.now(TZ).strftime('%Y%m%d-%H%M%S-%f')}.json"
     artifact.parent.mkdir(parents=True, exist_ok=True)
     artifact.write_text(json.dumps({"job": "pickup-inventory", "lookback_days": lookback_days,
-                                    "scope": "effective Assigned, all pending backlog", "stats": stats, "records": rows}, ensure_ascii=False, indent=2), encoding="utf-8")
+                                    "scope": "all effective Assigned and reporting-day unassigned Created", "stats": stats, "records": rows}, ensure_ascii=False, indent=2), encoding="utf-8")
     log.info("Tồn Pickup: %s. Báo cáo: %s", stats, artifact)
     return rows, stats

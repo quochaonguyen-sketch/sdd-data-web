@@ -8,12 +8,16 @@ RECORD_FIELDS = ('tracking_id', 'shipment_id', 'sls_tracking_number', 'create_ti
 def compact_pickup_payload(payload):
     groups, indices, records = [], {}, []
     for row in payload['p_rows']:
-        if row.get('status') != 'Assigned':
-            raise ValueError('Only Assigned pickup orders may be published')
+        status = row.get('status')
+        if status not in ('Assigned', 'Created'):
+            raise ValueError('Only Assigned and Created pickup orders may be published')
         group = tuple(row.get(key) for key in GROUP_FIELDS)
         if group not in indices:
             indices[group] = len(groups)
             groups.append(group)
-        records.append([*(row.get(key) for key in RECORD_FIELDS), indices[group]])
+        record = [*(row.get(key) for key in RECORD_FIELDS), indices[group]]
+        if status == 'Created':
+            record.append(status)
+        records.append(record)
     return {**{key: value for key, value in payload.items() if key != 'p_rows'},
             'p_records': records, 'p_groups': groups}

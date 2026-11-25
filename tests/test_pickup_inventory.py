@@ -49,7 +49,7 @@ class PickupTransformTests(unittest.TestCase):
     def test_pipeline_overlaps_sources_and_preserves_assigned_filter(self):
         gate = threading.Barrier(3, timeout=3)
         client = Mock(assigned_source_complete=True)
-        def orders(*args):
+        def orders(*args, **kwargs):
             gate.wait()
             return [sample_order(sid='assigned', status='2'), sample_order(sid='held', status='2', on_hold_reason=132)]
         def tasks():
@@ -89,12 +89,14 @@ class PickupTransformTests(unittest.TestCase):
         self.assertEqual(parse_pickup_ward("", ""), "")
 
     def test_cot_group_boundaries(self):
-        d0 = datetime(2026, 10, 24, 9, 0, tzinfo=TZ)
-        d1 = datetime(2026, 10, 24, 12, 0, tzinfo=TZ)
-        d2 = datetime(2026, 10, 24, 16, 0, tzinfo=TZ)
-        self.assertTrue(pickup_cot_group(d0).endswith("COT 1"))
-        self.assertTrue(pickup_cot_group(d1).endswith("COT 2"))
-        self.assertTrue(pickup_cot_group(d2).endswith("COT 1"))
+        for day, hour, minute, second, expected in [
+            (23, 15, 0, 0, "24/10/2026 COT 1"),
+            (24, 10, 29, 59, "24/10/2026 COT 1"),
+            (24, 10, 30, 0, "24/10/2026 COT 2"),
+            (24, 14, 59, 59, "24/10/2026 COT 2"),
+            (24, 15, 0, 0, "25/10/2026 COT 1"),
+        ]:
+            self.assertEqual(pickup_cot_group(datetime(2026, 10, day, hour, minute, second, tzinfo=TZ)), expected)
 
     def test_build_inventory_normal(self):
         order = sample_order(sid="VN111", pid="PUP001", status="2")
@@ -133,21 +135,30 @@ class PickupTransformTests(unittest.TestCase):
             files = list((root / "data").glob("pickup-inventory-*.json"))
             self.assertTrue(len(files) > 0)
 
-    def test_only_explicit_assigned_without_hold_or_picked_is_included(self):
+    def test_backlog_includes_unassigned_created_in_the_reporting_window(self):
         orders = [sample_order(sid="assigned", status="2"),
+                  sample_order(sid="assigned", status="0"),
                   sample_order(sid="held", status="2", on_hold_reason=132),
                   sample_order(sid="held-alt", status="2", pickup_on_hold_reason=1),
                   sample_order(sid="attempted", status="0", pickup_attempts=1),
                   sample_order(sid="created", status="0"),
+                  sample_order(sid="created-cot2", status="0", ctime=datetime(2026, 10, 24, 10, 30, tzinfo=TZ).timestamp()),
+                  sample_order(sid="created-with-rider", status="0", driver_id=123),
+                  sample_order(sid="created-before-window", status="0", ctime=datetime(2026, 10, 23, 14, 59, 59, tzinfo=TZ).timestamp()),
+                  sample_order(sid="created-next-day", status="0", hour=15),
                   sample_order(sid="picked", status="4"),
                   sample_order(sid="inbound", status="7"),
                   sample_order(sid="picked-time", status="2", driver_pickedup_time=1792800000),
                   sample_order(sid="unknown", status="999")]
         tasks = {"point_riders": {"PUP001": "[COT1] 123-Rider"}, "accepted_pids": {"PUP001"}}
         rows, stats = build_pickup_inventory(orders, MAPPING, AREAS, {}, {"PUP001":"route-a"}, tasks, "test", "2026-10-24T12:00:00+07:00")
-        self.assertEqual([r["shipment_id"] for r in rows], ["assigned"])
+        self.assertEqual([(r["shipment_id"], r["status"], r["cot_group"], r["assigned_riders_today"]) for r in rows], [
+            ("assigned", "Assigned", "24/10/2026 COT 1", "[COT1] 123-Rider"),
+            ("created", "Created", "24/10/2026 COT 1", ""),
+            ("created-cot2", "Created", "24/10/2026 COT 2", ""),
+        ])
         self.assertEqual(stats["excluded_pickup_onhold"], 3)
-        self.assertEqual(stats["excluded_created"], 1)
+        self.assertEqual(stats["excluded_created"], 3)
         self.assertEqual(stats["excluded_picked_up"], 2)
 
     def test_store_rejects_non_assigned_and_unverified_empty_snapshots(self):

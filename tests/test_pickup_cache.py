@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -7,6 +8,7 @@ from unittest.mock import Mock
 from sdd_data.pickup_cache import PickupRecordCache, cached_windows, save_windows
 from sdd_data.pickup_inventory import PickupInventoryClient, build_pickup_inventory
 from sdd_data.pickup_realtime import RealtimeClient
+from sdd_data.transform import TZ
 from tests.test_pickup_inventory import MAPPING, AREAS, sample_order
 
 
@@ -62,15 +64,21 @@ class PickupCacheTests(unittest.TestCase):
             def get(path, params):
                 calls.append(params)
                 left, right = map(int, params["ctime"].split(","))
+                if params["status"] == 0:
+                    return {"list": [], "pending_assign_count": 0, "count": params["count"]}
                 # Even a formerly empty window can acquire a new Assigned order.
                 candidates = [(50, {"pickup_order_id": "old", "status": 2, "on_hold_reason": 132}),
                               (150, {"pickup_order_id": "newly-assigned", "status": 2})]
                 rows = [row for stamp, row in candidates if left <= stamp <= right]
                 return {"list": rows, "total": len(rows), "count": params["count"]}
             client.get = get
-            rows = client.fetch_all_pickup_orders()
+            snapshot = datetime(2026, 10, 24, 16, 0, tzinfo=TZ)
+            rows = client.fetch_all_pickup_orders(snapshot=snapshot)
             self.assertEqual(len(rows), 2)
-            self.assertEqual(len(calls), 2)
+            self.assertEqual([p["status"] for p in calls], [0, 2, 2])
+            start, end = map(int, calls[0]["ctime"].split(","))
+            self.assertEqual(datetime.fromtimestamp(start, TZ), datetime(2026, 10, 23, 15, tzinfo=TZ))
+            self.assertEqual(datetime.fromtimestamp(end, TZ), datetime(2026, 10, 24, 14, 59, 59, tzinfo=TZ))
             self.assertTrue(all(p["count"] == 500 for p in calls))
             self.assertTrue(client.assigned_source_complete)
 
