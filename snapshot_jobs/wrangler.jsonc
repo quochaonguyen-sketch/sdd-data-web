@@ -1,0 +1,16 @@
+{
+  "name": "sdd-snapshot-jobs",
+  "account_id": "94ee40eedc238e768a54824a4ce9e67d",
+  "d1_databases": [
+    {
+      "binding": "PICKUP_DAILY",
+      "database_name": "sdd-pickup-daily",
+      "database_id": "65d6a4b8-e567-4d33-a909-84bba47f6cd6"
+    },
+    {
+      "binding": "BACKLOG_HISTORY",
+      "database_name": "sdd-backlog-history",
+      "database_id": "17f6b726-d125-4045-9498-c2a33c9a7b8f"
+    }
+  ]
+}

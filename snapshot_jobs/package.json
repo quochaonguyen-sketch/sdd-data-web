@@ -1,0 +1,7 @@
+{
+  "name": "sdd-snapshot-jobs",
+  "private": true,
+  "devDependencies": {
+    "wrangler": "4.166.0"
+  }
+}

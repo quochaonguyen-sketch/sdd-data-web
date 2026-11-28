@@ -79,7 +79,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--worker-dir", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--date", type=date.fromisoformat)
-    parser.add_argument("--publish", action="store_true", help="Publish the complete snapshot to Supabase.")
     args = parser.parse_args()
     worker_dir = args.worker_dir.resolve()
     sys.path.insert(0, str(worker_dir))
@@ -89,9 +88,6 @@ def main():
     from sdd_data.clients import load_coverage
     from sdd_data.runner import RunLock
     from sdd_data.transform import TZ
-
-    class DailyOrderStore(RealtimeStore):
-        tables = (*RealtimeStore.tables, "rpc/publish_pickup_daily_orders")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     settings = Settings.load(worker_dir)
@@ -106,7 +102,7 @@ def main():
     path = local_dir / f"{day}.json"
 
     with RunLock(path.with_suffix(".lock")):
-        client, store = RealtimeClient(settings), DailyOrderStore(settings)
+        client, store = RealtimeClient(settings), RealtimeStore(settings)
         try:
             client.deadline = monotonic() + 600
             store.cache_dir = worker_dir / "data"
@@ -120,8 +116,6 @@ def main():
                 orders = normalize_orders(raw, day, observed, settings.station_id, inventory.result()[1],
                                           groups.result()[0], coverage.result())
             payload = {"report_date": day.isoformat(), "observed_at": observed.isoformat(), "orders": orders}
-            if args.publish:
-                store.request("POST", "rpc/publish_pickup_daily_orders", {}, {"p_snapshot": payload})
             with NamedTemporaryFile(mode="w", encoding="utf-8", dir=local_dir, delete=False) as file:
                 temporary = Path(file.name)
                 json.dump(payload, file, ensure_ascii=False, separators=(",", ":"))
