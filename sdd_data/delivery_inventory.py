@@ -204,7 +204,7 @@ def build_inventory(orders, mapping, areas, ward_catalog=None):
         if info.get("area") not in areas:
             stats["outside_scope"] += 1
             continue
-        kind = "WH" if "51-HCM Warehouse Inbound" in str(order.get("pickup_station_name") or "") else "MP"
+        kind = "WH" if "warehouse" in str(order.get("pickup_station_name") or "").casefold() else "MP"
         rows.append({"shipment_id": sid, "create_time": created.isoformat(), "received_time": received.isoformat(),
                      "report_date": received.date().isoformat(), "ward": info.get("old_ward") or info.get("ward") or "",
                      "district": info.get("district") or "", "area": info["area"], "zone_id": zone,

@@ -91,9 +91,17 @@ class InventoryTransformTests(unittest.TestCase):
         self.assertEqual(build_inventory([order(zone_id="route-b")], MAPPING, ("KV1",))[0], [])
 
     def test_warehouse_and_artifact_do_not_include_raw_personal_fields(self):
-        rows, _ = build_inventory([order(pickup_station_name="51-HCM Warehouse Inbound",
-                                         buyer_phone="private", buyer_address="private")], MAPPING, AREAS)
-        self.assertEqual(rows[0]["order_type"], "WH")
+        orders = [
+            order("A", pickup_station_name="51-HCM Warehouse Inbound", buyer_phone="private", buyer_address="private"),
+            order("B", hour=12, pickup_station_name="52-HCM WAREHOUSE"),
+            order("C", hour=12, pickup_station_name="53-HCM warehouse outbound"),
+            order("D", hour=12, pickup_station_name="54-HCM Pickup Hub"),
+            order("E", pickup_station_name=None),
+        ]
+        rows, _ = build_inventory(orders, MAPPING, AREAS)
+        self.assertEqual([row["order_type"] for row in rows], ["WH", "WH", "WH", "MP", "MP"])
+        self.assertEqual([row["cot_group"] for row in rows[1:4]],
+                         ["2026-10-23 COT 2", "2026-10-23 COT 2", "2026-10-23 COT 1"])
         self.assertNotIn("private", json.dumps(rows))
         self.assertNotIn("driver_id", rows[0])
 
